@@ -1,0 +1,15 @@
+# Debug symbols
+*.pdb
+
+# Python cache
+__pycache__/
+
+# IDE
+.vs/
+.vscode/
+*.suo
+*.user
+
+# OS
+Thumbs.db
+.DS_Store
