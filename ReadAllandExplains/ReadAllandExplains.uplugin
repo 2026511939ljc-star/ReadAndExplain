@@ -1,9 +1,9 @@
 {
 	"FileVersion": 3,
-	"Version": 3,
-	"VersionName": "3.0",
+	"Version": 4,
+	"VersionName": "4.0.0-preview.1",
 	"FriendlyName": "ReadAllandExplains",
-	"Description": "Exports Blueprints, complete material graphs and Niagara source assets to readable AI/reconstruction text.",
+	"Description": "Artist-friendly AI documents with Blueprint, Material, Niagara, mesh, texture, data-table and dependency insights.",
 	"Category": "Editor",
 	"CreatedBy": "Aoife",
 	"CreatedByURL": "",

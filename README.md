@@ -8,3 +8,13 @@
 - 稳定基线位于 `versions/ReadAllandExplains_v3.0_UE5.7_20260801_baseline`。
 
 第一阶段计划：保留当前导出速度，先建立美术友好的输出层、跨资产依赖关系和参数级追踪的基础结构。
+
+## 4.0.0 Preview 1
+
+- Keeps the existing Blueprint, Material and Niagara technical exports.
+- Adds an artist-facing introduction and quick-read section.
+- Adds direct dependencies, referencers and Mermaid relationship graphs.
+- Adds batch `index.md` output with same-name cross-system parameter clues.
+- Adds Static Mesh, Texture, DataTable and CurveTable exporters.
+- Texture export stays metadata-only by default, so no thumbnail or pixel-read slowdown is introduced.
+- Tested by compiling and loading the plugin in Unreal Engine 5.7.4.

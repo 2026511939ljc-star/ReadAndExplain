@@ -2,10 +2,16 @@
 
 #include "ReadAllandExplains.h"
 #include "BlueprintToTextExporter.h"
+#include "CommonAssetToTextExporter.h"
+#include "AssetInsightExporter.h"
 #include "MaterialToTextExporter.h"
 #include "NiagaraToTextExporter.h"
 #include "Blueprint/BlueprintSupport.h"
 #include "Engine/Blueprint.h"
+#include "Engine/CurveTable.h"
+#include "Engine/DataTable.h"
+#include "Engine/StaticMesh.h"
+#include "Engine/Texture.h"
 #include "Materials/MaterialInterface.h"
 #include "Materials/MaterialFunctionInterface.h"
 #include "NiagaraSystem.h"
@@ -55,6 +61,11 @@ namespace ReadAllandExplainsExportImpl
 		return GetExportRootDir() / TEXT("Niagara");
 	}
 
+	static FString GetCommonAssetExportDir(const UObject* Asset)
+	{
+		return GetExportRootDir() / FCommonAssetToTextExporter::GetExportFolderName(Asset);
+	}
+
 	static bool EnsureDir(const FString& Dir)
 	{
 		IPlatformFile& PlatformFile = FPlatformFileManager::Get().GetPlatformFile();
@@ -90,7 +101,8 @@ namespace ReadAllandExplainsExportImpl
 		// 蓝图
 		if (UBlueprint* Blueprint = Cast<UBlueprint>(Obj))
 		{
-			const FString Text = FBlueprintToTextExporter::ExportBlueprintToText(Blueprint);
+			const FString Text = FAssetInsightExporter::DecorateDocument(
+				AssetData, Blueprint, FBlueprintToTextExporter::ExportBlueprintToText(Blueprint));
 			if (Text.IsEmpty()) return EExportResult::Failed;
 			const FString Saved = SaveText(Text, GetBlueprintExportDir(), Blueprint->GetName(), TEXT("_ReadableCode.txt"));
 			if (Saved.IsEmpty()) return EExportResult::Failed;
@@ -101,7 +113,8 @@ namespace ReadAllandExplainsExportImpl
 		// 材质 / 材质实例（注意：UMaterialInstance 也是 UMaterialInterface）
 		if (UMaterialInterface* MatIface = Cast<UMaterialInterface>(Obj))
 		{
-			const FString Text = FMaterialToTextExporter::ExportMaterialToText(MatIface);
+			const FString Text = FAssetInsightExporter::DecorateDocument(
+				AssetData, MatIface, FMaterialToTextExporter::ExportMaterialToText(MatIface));
 			if (Text.IsEmpty()) return EExportResult::Failed;
 			const FString Saved = SaveText(Text, GetMaterialExportDir(), MatIface->GetName(), TEXT("_ReadableMaterial.md"));
 			if (Saved.IsEmpty()) return EExportResult::Failed;
@@ -112,7 +125,8 @@ namespace ReadAllandExplainsExportImpl
 		// 材质函数
 		if (UMaterialFunctionInterface* MatFunc = Cast<UMaterialFunctionInterface>(Obj))
 		{
-			const FString Text = FMaterialToTextExporter::ExportMaterialFunctionToText(MatFunc);
+			const FString Text = FAssetInsightExporter::DecorateDocument(
+				AssetData, MatFunc, FMaterialToTextExporter::ExportMaterialFunctionToText(MatFunc));
 			if (Text.IsEmpty()) return EExportResult::Failed;
 			const FString Saved = SaveText(Text, GetMaterialExportDir(), MatFunc->GetName(), TEXT("_ReadableMaterialFunction.md"));
 			if (Saved.IsEmpty()) return EExportResult::Failed;
@@ -123,7 +137,8 @@ namespace ReadAllandExplainsExportImpl
 		// Niagara System / Emitter / Script（Module、Dynamic Input 等也属于 UNiagaraScript）
 		if (Obj->IsA<UNiagaraSystem>() || Obj->IsA<UNiagaraEmitter>() || Obj->IsA<UNiagaraScript>())
 		{
-			const FString Text = FNiagaraToTextExporter::ExportNiagaraAssetToText(Obj);
+			const FString Text = FAssetInsightExporter::DecorateDocument(
+				AssetData, Obj, FNiagaraToTextExporter::ExportNiagaraAssetToText(Obj));
 			if (Text.IsEmpty()) return EExportResult::Failed;
 			const FString Saved = SaveText(Text, GetNiagaraExportDir(), Obj->GetName(), TEXT("_ReadableNiagara.md"));
 			if (Saved.IsEmpty()) return EExportResult::Failed;
@@ -131,7 +146,36 @@ namespace ReadAllandExplainsExportImpl
 			return EExportResult::Success;
 		}
 
+		if (FCommonAssetToTextExporter::Supports(Obj))
+		{
+			const FString Text = FAssetInsightExporter::DecorateDocument(
+				AssetData, Obj, FCommonAssetToTextExporter::ExportAssetToText(Obj));
+			if (Text.IsEmpty()) return EExportResult::Failed;
+			const FString Saved = SaveText(
+				Text,
+				GetCommonAssetExportDir(Obj),
+				Obj->GetName(),
+				FCommonAssetToTextExporter::GetFileSuffix(Obj));
+			if (Saved.IsEmpty()) return EExportResult::Failed;
+			OutSavedPath = Saved;
+			return EExportResult::Success;
+		}
+
 		return EExportResult::Skipped;
+	}
+
+	static bool IsSupportedAssetData(const FAssetData& AssetData)
+	{
+		return AssetData.IsInstanceOf(UBlueprint::StaticClass())
+			|| AssetData.IsInstanceOf(UMaterialInterface::StaticClass())
+			|| AssetData.IsInstanceOf(UMaterialFunctionInterface::StaticClass())
+			|| AssetData.IsInstanceOf(UNiagaraSystem::StaticClass())
+			|| AssetData.IsInstanceOf(UNiagaraEmitter::StaticClass())
+			|| AssetData.IsInstanceOf(UNiagaraScript::StaticClass())
+			|| AssetData.IsInstanceOf(UStaticMesh::StaticClass())
+			|| AssetData.IsInstanceOf(UTexture::StaticClass())
+			|| AssetData.IsInstanceOf(UDataTable::StaticClass())
+			|| AssetData.IsInstanceOf(UCurveTable::StaticClass());
 	}
 
 	static TArray<FAssetData> GetSelectedAssetsFromContentBrowser()
@@ -167,6 +211,8 @@ struct FBatchExportResult
 	int32 FailedCount = 0;
 	int32 SkippedCount = 0;
 	FString FirstSavedPath;
+	TArray<FAssetData> ExportedAssets;
+	TArray<FString> SavedPaths;
 };
 
 static FBatchExportResult ExportAssetDataList(const TArray<FAssetData>& AssetList)
@@ -181,6 +227,8 @@ static FBatchExportResult ExportAssetDataList(const TArray<FAssetData>& AssetLis
 		case ReadAllandExplainsExportImpl::EExportResult::Success:
 			++R.SuccessCount;
 			if (R.FirstSavedPath.IsEmpty()) R.FirstSavedPath = SavedPath;
+			R.ExportedAssets.Add(AssetData);
+			R.SavedPaths.Add(SavedPath);
 			break;
 		case ReadAllandExplainsExportImpl::EExportResult::Failed:
 			++R.FailedCount;
@@ -190,6 +238,11 @@ static FBatchExportResult ExportAssetDataList(const TArray<FAssetData>& AssetLis
 			++R.SkippedCount;
 			break;
 		}
+	}
+	if (R.ExportedAssets.Num() > 0)
+	{
+		const FString IndexText = FAssetInsightExporter::BuildBatchIndex(R.ExportedAssets, R.SavedPaths);
+		SaveText(IndexText, GetExportRootDir(), TEXT("index"), TEXT(".md"));
 	}
 	return R;
 }
@@ -319,12 +372,7 @@ void FReadAllandExplainsModule::RegisterMenus()
 				bool bHasSupported = false;
 				for (const FAssetData& AssetData : Context->SelectedAssets)
 				{
-					if (AssetData.IsInstanceOf(UBlueprint::StaticClass())
-						|| AssetData.IsInstanceOf(UMaterialInterface::StaticClass())
-						|| AssetData.IsInstanceOf(UMaterialFunctionInterface::StaticClass())
-						|| AssetData.IsInstanceOf(UNiagaraSystem::StaticClass())
-						|| AssetData.IsInstanceOf(UNiagaraEmitter::StaticClass())
-						|| AssetData.IsInstanceOf(UNiagaraScript::StaticClass()))
+					if (IsSupportedAssetData(AssetData))
 					{
 						bHasSupported = true;
 						break;
@@ -378,12 +426,7 @@ void FReadAllandExplainsModule::RegisterMenus()
 			const FAssetData& AssetData = RefNode->GetAssetData();
 			if (!AssetData.IsValid()) continue;
 
-			if (AssetData.IsInstanceOf(UBlueprint::StaticClass())
-				|| AssetData.IsInstanceOf(UMaterialInterface::StaticClass())
-				|| AssetData.IsInstanceOf(UMaterialFunctionInterface::StaticClass())
-				|| AssetData.IsInstanceOf(UNiagaraSystem::StaticClass())
-				|| AssetData.IsInstanceOf(UNiagaraEmitter::StaticClass())
-				|| AssetData.IsInstanceOf(UNiagaraScript::StaticClass()))
+			if (IsSupportedAssetData(AssetData))
 			{
 				bHasSupported = true;
 				break;
