@@ -28,6 +28,7 @@ public class ReadAllandExplains : ModuleRules
 				"Core",
 				"CoreUObject",
 				"Engine",
+				"DeveloperSettings",
 				"NiagaraCore",
 				"Niagara",
 			}
@@ -52,6 +53,7 @@ public class ReadAllandExplains : ModuleRules
 				"GraphEditor",
 				"AssetManagerEditor",
 				"NiagaraEditor",
+				"Json",
 			}
 			);
 		

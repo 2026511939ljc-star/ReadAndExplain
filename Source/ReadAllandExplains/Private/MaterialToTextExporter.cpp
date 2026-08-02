@@ -2,6 +2,7 @@
 
 #include "MaterialToTextExporter.h"
 #include "AssetTextSnapshot.h"
+#include "ReadAllandExplainsSettings.h"
 
 #include "Materials/Material.h"
 #include "Materials/MaterialInstance.h"
@@ -9,6 +10,7 @@
 #include "Materials/MaterialExpression.h"
 #include "Materials/MaterialExpressionCollectionParameter.h"
 #include "Materials/MaterialExpressionMaterialFunctionCall.h"
+#include "Materials/MaterialExpressionNamedReroute.h"
 #include "Materials/MaterialExpressionTextureSample.h"
 #include "Materials/MaterialExpressionTextureObject.h"
 #include "Materials/MaterialExpressionConstant.h"
@@ -173,7 +175,12 @@ namespace
 
 	static int32 CountExpressionInputs(UMaterialExpression* Expr)
 	{
-		return Expr ? Expr->GetInputsView().Num() : 0;
+		int32 Count = 0;
+		for (FExpressionInputIterator It{Expr}; It; ++It)
+		{
+			++Count;
+		}
+		return Count;
 	}
 
 	struct FCollectedRefs
@@ -311,18 +318,25 @@ namespace
 	{
 		if (!Input || !Input->Expression)
 			return TEXT("0");
-		FString Value = EmitValue(Ctx, Input->Expression);
-		if (Input->OutputIndex != 0)
+
+		const FExpressionInput TracedInput = Input->GetTracedInput();
+		if (!TracedInput.Expression)
+			return TEXT("0");
+
+		FString Value = EmitValue(Ctx, TracedInput.Expression);
+		if (TracedInput.OutputIndex != 0)
 		{
-			Value = FString::Printf(TEXT("Output(%s, %d)"), *Value, Input->OutputIndex);
+			Value = FString::Printf(TEXT("Output(%s, %d)"), *Value, TracedInput.OutputIndex);
 		}
-		if (Input->Mask)
+
+		const FExpressionInput& MaskInput = Input->Mask ? *Input : TracedInput;
+		if (MaskInput.Mask)
 		{
 			FString Swizzle;
-			if (Input->MaskR) Swizzle += TEXT("r");
-			if (Input->MaskG) Swizzle += TEXT("g");
-			if (Input->MaskB) Swizzle += TEXT("b");
-			if (Input->MaskA) Swizzle += TEXT("a");
+			if (MaskInput.MaskR) Swizzle += TEXT("r");
+			if (MaskInput.MaskG) Swizzle += TEXT("g");
+			if (MaskInput.MaskB) Swizzle += TEXT("b");
+			if (MaskInput.MaskA) Swizzle += TEXT("a");
 			if (!Swizzle.IsEmpty())
 			{
 				Value = FString::Printf(TEXT("(%s.%s)"), *Value, *Swizzle);
@@ -352,6 +366,11 @@ namespace
 		if (const FString* Found = Ctx.VarByExpr.Find(Expr))
 			return *Found;
 
+		if (const UMaterialExpressionNamedRerouteDeclaration* Declaration = Cast<UMaterialExpressionNamedRerouteDeclaration>(Expr))
+			return EmitValueForInput(Ctx, &Declaration->Input);
+		if (const UMaterialExpressionNamedRerouteUsage* Usage = Cast<UMaterialExpressionNamedRerouteUsage>(Expr))
+			return IsValid(Usage->Declaration) ? EmitValueForInput(Ctx, &Usage->Declaration->Input) : TEXT("InvalidNamedReroute");
+
 		// 尽量对“常量类”做内联（不生成临时变量），提高可读性
 		if (const UMaterialExpressionConstant* K = Cast<UMaterialExpressionConstant>(Expr))
 			return EmitLiteralFloat(K->R);
@@ -373,6 +392,35 @@ namespace
 		else if (const UMaterialExpressionVectorParameter* VP = Cast<UMaterialExpressionVectorParameter>(Expr))
 		{
 			RHS = FString::Printf(TEXT("ParamVector(\"%s\")"), *VP->ParameterName.ToString());
+		}
+		else if (const UMaterialExpressionMaterialFunctionCall* FunctionCall = Cast<UMaterialExpressionMaterialFunctionCall>(Expr))
+		{
+			const FString FunctionName = FunctionCall->MaterialFunction
+				? FunctionCall->MaterialFunction->GetName()
+				: TEXT("<未指定函数>");
+			const FString FunctionPath = GetObjectPathSafe(FunctionCall->MaterialFunction);
+			TArray<FString> Arguments;
+			Arguments.Reserve(FunctionCall->FunctionInputs.Num());
+			for (int32 InputIndex = 0; InputIndex < FunctionCall->FunctionInputs.Num(); ++InputIndex)
+			{
+				const FFunctionExpressionInput& FunctionInput = FunctionCall->FunctionInputs[InputIndex];
+				FString InputName = FunctionInput.ExpressionInput
+					? FunctionInput.ExpressionInput->InputName.ToString()
+					: FunctionCall->GetInputName(InputIndex).ToString();
+				if (InputName.IsEmpty())
+				{
+					InputName = FString::Printf(TEXT("Input%d"), InputIndex);
+				}
+				Arguments.Add(FString::Printf(TEXT("Input(\"%s\", %s)"),
+					*EscapeForQuotedString(InputName),
+					*EmitValueForInput(Ctx, &FunctionInput.Input)));
+			}
+			const FString JoinedArguments = FString::Join(Arguments, TEXT(", "));
+			RHS = FString::Printf(TEXT("MaterialFunction(\"%s\", \"%s\"%s%s)"),
+				*EscapeForQuotedString(FunctionName),
+				*EscapeForQuotedString(FunctionPath),
+				Arguments.Num() > 0 ? TEXT(", ") : TEXT(""),
+				*JoinedArguments);
 		}
 		else if (const UMaterialExpressionTextureSampleParameter2D* TP = Cast<UMaterialExpressionTextureSampleParameter2D>(Expr))
 		{
@@ -841,6 +889,8 @@ FString FMaterialToTextExporter::ExportMaterialToText(UMaterialInterface* Materi
 	if (!MaterialInterface)
 		return FString();
 
+	const UReadAllandExplainsSettings* Settings = GetDefault<UReadAllandExplainsSettings>();
+	const EReadAllExportMode Mode = Settings ? Settings->ExportMode : EReadAllExportMode::Compact;
 	FString Out;
 	Out += TEXT("# Material Export (for AI)\n");
 	Out += TEXT("# Name: ") + MaterialInterface->GetName() + TEXT("\n");
@@ -1247,8 +1297,9 @@ FString FMaterialToTextExporter::ExportMaterialToText(UMaterialInterface* Materi
 	}
 	Out += TEXT("\n");
 
-	Out += TEXT("---\n");
+	if (Mode == EReadAllExportMode::Reconstruction)
 	{
+		Out += TEXT("---\n");
 		UMaterial* BaseMaterial = MaterialInterface->GetMaterial();
 		if (BaseMaterial)
 		{
@@ -1276,6 +1327,8 @@ FString FMaterialToTextExporter::ExportMaterialFunctionToText(UMaterialFunctionI
 	if (!MaterialFunction)
 		return FString();
 
+	const UReadAllandExplainsSettings* Settings = GetDefault<UReadAllandExplainsSettings>();
+	const EReadAllExportMode Mode = Settings ? Settings->ExportMode : EReadAllExportMode::Compact;
 	FString Out;
 	Out += TEXT("# Material Function Export (for AI)\n");
 	Out += TEXT("# Name: ") + MaterialFunction->GetName() + TEXT("\n");
@@ -1357,11 +1410,14 @@ FString FMaterialToTextExporter::ExportMaterialFunctionToText(UMaterialFunctionI
 	EmitFunctionGraphIndex(MaterialFunction, Out);
 	Out += TEXT("\n");
 
-	EmitExpressionSnapshots(MaterialFunction->GetExpressions(),
-		Cast<UMaterialFunction>(MaterialFunction)
-			? CastChecked<UMaterialFunction>(MaterialFunction)->GetEditorComments()
-			: TConstArrayView<TObjectPtr<UMaterialExpressionComment>>(),
-		Out);
+	if (Mode == EReadAllExportMode::Reconstruction)
+	{
+		EmitExpressionSnapshots(MaterialFunction->GetExpressions(),
+			Cast<UMaterialFunction>(MaterialFunction)
+				? CastChecked<UMaterialFunction>(MaterialFunction)->GetEditorComments()
+				: TConstArrayView<TObjectPtr<UMaterialExpressionComment>>(),
+			Out);
+	}
 	Out += TEXT("## Native Graph Availability\n\n");
 	Out += TEXT("- Material Function expression objects, all reflected fields, inputs, outputs and links are preserved above. UE creates its transient MaterialGraph only while the function editor is open, so the deterministic expression snapshot is the authoritative reconstruction layer for functions.\n\n");
 

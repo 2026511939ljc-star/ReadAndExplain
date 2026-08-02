@@ -1,6 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "AssetTextSnapshot.h"
+#include "ReadAllandExplainsSettings.h"
 
 #include "EdGraph/EdGraph.h"
 #include "EdGraph/EdGraphNode.h"
@@ -135,6 +136,12 @@ FString FAssetTextSnapshot::ExportStructProperties(
 	UObject* Owner,
 	const FString& Heading)
 {
+	const UReadAllandExplainsSettings* Settings = GetDefault<UReadAllandExplainsSettings>();
+	const EReadAllExportMode Mode = Settings ? Settings->ExportMode : EReadAllExportMode::Compact;
+	if (!ReadAllExportModeIncludes(Mode, EReadAllExportMode::Full))
+	{
+		return FString();
+	}
 	if (!Struct || !StructData)
 	{
 		return FString::Printf(TEXT("### %s\n\n- (unavailable)\n\n"), *Heading);
@@ -155,6 +162,10 @@ FString FAssetTextSnapshot::ExportStructProperties(
 		}
 
 		const FString Value = ExportPropertyValue(Property, StructData, Owner);
+		if (Value == TEXT("<unexportable>") || Value == TEXT("<invalid>"))
+		{
+			continue;
+		}
 		Out += FString::Printf(
 			TEXT("| %s | %s | %s |\n"),
 			*MarkdownCell(Property->GetName()),
@@ -175,6 +186,12 @@ FString FAssetTextSnapshot::ExportObjectProperties(
 	const UObject* Object,
 	const FString& Heading)
 {
+	const UReadAllandExplainsSettings* Settings = GetDefault<UReadAllandExplainsSettings>();
+	const EReadAllExportMode Mode = Settings ? Settings->ExportMode : EReadAllExportMode::Compact;
+	if (!ReadAllExportModeIncludes(Mode, EReadAllExportMode::Full))
+	{
+		return FString();
+	}
 	if (!Object)
 	{
 		return FString::Printf(TEXT("### %s\n\n- (null)\n\n"), *Heading);
@@ -197,6 +214,10 @@ FString FAssetTextSnapshot::ExportObjectProperties(
 		}
 
 		const FString Value = ExportPropertyValue(Property, Object, const_cast<UObject*>(Object));
+		if (Value == TEXT("<unexportable>") || Value == TEXT("<invalid>"))
+		{
+			continue;
+		}
 		Out += FString::Printf(
 			TEXT("| %s | %s | %s |\n"),
 			*MarkdownCell(Property->GetName()),
@@ -218,6 +239,12 @@ FString FAssetTextSnapshot::ExportGraph(
 	const FString& Heading,
 	const bool bIncludeNativeClipboardText)
 {
+	const UReadAllandExplainsSettings* Settings = GetDefault<UReadAllandExplainsSettings>();
+	const EReadAllExportMode Mode = Settings ? Settings->ExportMode : EReadAllExportMode::Compact;
+	if (Mode == EReadAllExportMode::Artist)
+	{
+		return FString();
+	}
 	FString Out;
 	Out += FString::Printf(TEXT("## %s\n\n"), *Heading);
 	if (!Graph)
@@ -261,6 +288,11 @@ FString FAssetTextSnapshot::ExportGraph(
 			static_cast<int32>(Node->GetDesiredEnabledState()));
 	}
 	Out += TEXT("\n");
+
+	if (!ReadAllExportModeIncludes(Mode, EReadAllExportMode::Full))
+	{
+		return Out;
+	}
 
 	for (int32 NodeIndex = 0; NodeIndex < Graph->Nodes.Num(); ++NodeIndex)
 	{
@@ -340,7 +372,7 @@ FString FAssetTextSnapshot::ExportGraph(
 		Out += TEXT("\n");
 	}
 
-	if (bIncludeNativeClipboardText)
+	if (bIncludeNativeClipboardText && Mode == EReadAllExportMode::Reconstruction)
 	{
 		TSet<UObject*> NodesToExport;
 		for (UEdGraphNode* Node : Graph->Nodes)
