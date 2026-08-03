@@ -14,26 +14,32 @@
 #include "Engine/DataTable.h"
 #include "Engine/StaticMesh.h"
 #include "Engine/Texture.h"
+#include "Curves/RichCurve.h"
 #include "EdGraph/EdGraph.h"
 #include "EdGraph/EdGraphNode.h"
 #include "EdGraph/EdGraphPin.h"
 #include "EdGraphSchema_K2.h"
 #include "Materials/Material.h"
+#include "MaterialDomain.h"
 #include "Materials/MaterialAttributeDefinitionMap.h"
 #include "Materials/MaterialExpression.h"
 #include "Materials/MaterialExpressionMaterialFunctionCall.h"
 #include "Materials/MaterialExpressionNamedReroute.h"
 #include "Materials/MaterialFunctionInterface.h"
 #include "Materials/MaterialInterface.h"
+#include "Materials/MaterialInstance.h"
 #include "NiagaraEmitter.h"
 #include "NiagaraEmitterHandle.h"
+#include "NiagaraDataInterfaceCurveBase.h"
 #include "NiagaraGraph.h"
 #include "NiagaraNodeFunctionCall.h"
 #include "NiagaraParameterStore.h"
+#include "NiagaraRendererProperties.h"
 #include "NiagaraScript.h"
 #include "NiagaraScriptSource.h"
 #include "NiagaraSystem.h"
 #include "UObject/UnrealType.h"
+#include "UObject/UObjectHash.h"
 
 namespace AssetInsightImpl
 {
@@ -699,7 +705,8 @@ namespace AssetInsightImpl
 		UNiagaraGraph* SourceGraph,
 		const FString& GraphKind,
 		TSet<FString>& CollectedGraphIds,
-		TArray<FReadAllGraphIR>& OutGraphs)
+		TArray<FReadAllGraphIR>& OutGraphs,
+		const int32 RecursionDepth = 0)
 	{
 		if (!SourceGraph) return;
 		const FString GraphId = SourceGraph->GetPathName();
@@ -712,6 +719,7 @@ namespace AssetInsightImpl
 		Graph.Kind = GraphKind;
 
 		TMap<const UEdGraphNode*, FString> NodeIds;
+		TArray<UNiagaraGraph*> ProjectCalleeGraphs;
 		for (const UEdGraphNode* Node : SourceGraph->Nodes)
 		{
 			if (Node) NodeIds.Add(Node, StableObjectId(Node->NodeGuid, Node, TEXT("niagara-node:")));
@@ -729,9 +737,26 @@ namespace AssetInsightImpl
 			if (const UNiagaraNodeFunctionCall* FunctionCall = Cast<UNiagaraNodeFunctionCall>(Node))
 			{
 				NodeIR.Title = FunctionCall->GetFunctionName();
+				NodeIR.bEnabled = FunctionCall->GetDesiredEnabledState() != ENodeEnabledState::Disabled;
+				NodeIR.SelectedVersion = FunctionCall->SelectedScriptVersion.IsValid()
+					? FunctionCall->SelectedScriptVersion.ToString(EGuidFormats::DigitsWithHyphens)
+					: FString();
 				if (FunctionCall->FunctionScript)
 				{
-					NodeIR.Comment = FunctionCall->FunctionScript->GetPathName();
+					NodeIR.ReferencePath = FunctionCall->FunctionScript->GetPathName();
+					NodeIR.Comment = NodeIR.ReferencePath;
+					if (RecursionDepth < 4 && NodeIR.ReferencePath.StartsWith(TEXT("/Game/")))
+					{
+						if (UNiagaraGraph* CalledGraph = FunctionCall->GetCalledGraph())
+						{
+							NodeIR.CalleeGraphId = CalledGraph->GetPathName();
+							ProjectCalleeGraphs.AddUnique(CalledGraph);
+						}
+					}
+				}
+				else
+				{
+					NodeIR.ReferencePath = FunctionCall->Signature.Name.ToString();
 				}
 			}
 			if (NodeIR.Title.IsEmpty()) NodeIR.Title = NodeIR.Name;
@@ -787,6 +812,10 @@ namespace AssetInsightImpl
 
 		SortGraph(Graph);
 		OutGraphs.Add(MoveTemp(Graph));
+		for (UNiagaraGraph* CalleeGraph : ProjectCalleeGraphs)
+		{
+			CollectNiagaraSourceGraph(CalleeGraph, TEXT("NiagaraProjectModuleGraph"), CollectedGraphIds, OutGraphs, RecursionDepth + 1);
+		}
 	}
 
 	static void CollectNiagaraScriptGraphs(
@@ -852,6 +881,245 @@ namespace AssetInsightImpl
 		{
 			CollectNiagaraScriptGraphs(Script, TEXT("NiagaraScriptGraph"), CollectedGraphIds, OutGraphs);
 		}
+	}
+
+	template <typename TEnum>
+	static FString NiagaraEnumName(const TEnum Value)
+	{
+		if (const UEnum* Enum = StaticEnum<TEnum>())
+		{
+			return Enum->GetNameStringByValue(static_cast<int64>(Value));
+		}
+		return FString::Printf(TEXT("%d"), static_cast<int32>(Value));
+	}
+
+	static FString ExportReflectedValue(const FProperty* Property, const UObject* Object)
+	{
+		if (!Property || !Object) return FString();
+		FString Value;
+		Property->ExportText_InContainer(
+			0,
+			Value,
+			Object,
+			nullptr,
+			const_cast<UObject*>(Object),
+			PPF_Copy | PPF_Delimited | PPF_ExportsNotFullyQualified,
+			const_cast<UObject*>(Object));
+		return Value;
+	}
+
+	static void CollectRenderer(
+		const FVersionedNiagaraEmitter& VersionedEmitter,
+		const UNiagaraRendererProperties* Renderer,
+		const int32 RendererIndex,
+		TSet<FString>& CollectedIds,
+		TArray<FReadAllNiagaraRendererIR>& OutRenderers)
+	{
+		if (!Renderer || !VersionedEmitter.Emitter) return;
+		const FString Version = VersionedEmitter.Version.IsValid()
+			? VersionedEmitter.Version.ToString(EGuidFormats::DigitsWithHyphens)
+			: TEXT("unversioned");
+		const FString Id = VersionedEmitter.Emitter->GetPathName() + TEXT("|") + Version + FString::Printf(TEXT("|renderer-%d"), RendererIndex);
+		if (CollectedIds.Contains(Id)) return;
+		CollectedIds.Add(Id);
+
+		FReadAllNiagaraRendererIR Result;
+		Result.Id = Id;
+		Result.EmitterPath = VersionedEmitter.Emitter->GetPathName();
+		Result.EmitterVersion = Version;
+		Result.Index = RendererIndex;
+		Result.Name = Renderer->GetName();
+		Result.ClassPath = Renderer->GetClass()->GetPathName();
+		Result.SourceMode = NiagaraEnumName(Renderer->GetCurrentSourceMode());
+		Result.bEnabled = Renderer->GetIsEnabled();
+
+		TArray<UMaterialInterface*> Materials;
+		Renderer->GetUsedMaterials(nullptr, Materials);
+		for (const UMaterialInterface* Material : Materials)
+		{
+			if (Material) Result.Materials.AddUnique(Material->GetPathName());
+		}
+		Result.Materials.Sort();
+
+		for (const FNiagaraVariableAttributeBinding* Binding : Renderer->GetAttributeBindings())
+		{
+			if (!Binding) continue;
+			FReadAllNiagaraRendererBindingIR BindingIR;
+#if WITH_EDITORONLY_DATA
+			BindingIR.DisplayName = Binding->GetName().ToString();
+#endif
+			const FNiagaraVariableBase& Variable = Binding->GetParamMapBindableVariable();
+			const FNiagaraVariableBase DataSetVariable = Binding->GetDataSetBindableVariable();
+			BindingIR.VariableName = Variable.GetName().ToString();
+			BindingIR.DataSetName = DataSetVariable.GetName().ToString();
+			BindingIR.Type = Binding->GetType().GetNameText().ToString();
+			BindingIR.SourceMode = NiagaraEnumName(Binding->GetBindingSourceMode());
+			BindingIR.bValid = Binding->IsValid();
+			BindingIR.bExistsOnSource = Binding->DoesBindingExistOnSource();
+			if (BindingIR.DisplayName.IsEmpty()) BindingIR.DisplayName = BindingIR.VariableName;
+			Result.Bindings.Add(MoveTemp(BindingIR));
+		}
+
+		for (TFieldIterator<FProperty> It(Renderer->GetClass(), EFieldIteratorFlags::IncludeSuper); It; ++It)
+		{
+			const FProperty* Property = *It;
+			if (!Property || !Property->HasAnyPropertyFlags(CPF_Edit)
+				|| Property->HasAnyPropertyFlags(CPF_Transient | CPF_DuplicateTransient | CPF_NonPIEDuplicateTransient)) continue;
+			const FString Value = ExportReflectedValue(Property, Renderer);
+			if (Value.IsEmpty()) continue;
+			Result.Properties.Add({Property->GetName(), Property->GetCPPType(), Property->GetMetaData(TEXT("Category")), Value});
+		}
+		OutRenderers.Add(MoveTemp(Result));
+	}
+
+	static void CollectEmitterRenderers(
+		const FVersionedNiagaraEmitter& VersionedEmitter,
+		TSet<FString>& CollectedIds,
+		TArray<FReadAllNiagaraRendererIR>& OutRenderers)
+	{
+		FVersionedNiagaraEmitterData* Data = VersionedEmitter.GetEmitterData();
+		if (!Data) return;
+		for (int32 Index = 0; Index < Data->GetRenderers().Num(); ++Index)
+		{
+			CollectRenderer(VersionedEmitter, Data->GetRenderers()[Index], Index, CollectedIds, OutRenderers);
+		}
+	}
+
+	static void CollectNiagaraRenderers(UObject* Asset, TArray<FReadAllNiagaraRendererIR>& OutRenderers)
+	{
+		OutRenderers.Reset();
+		TSet<FString> CollectedIds;
+		if (UNiagaraSystem* System = Cast<UNiagaraSystem>(Asset))
+		{
+			for (const FNiagaraEmitterHandle& Handle : System->GetEmitterHandles())
+			{
+				CollectEmitterRenderers(Handle.GetInstance(), CollectedIds, OutRenderers);
+			}
+		}
+		else if (UNiagaraEmitter* Emitter = Cast<UNiagaraEmitter>(Asset))
+		{
+			TArray<FNiagaraAssetVersion> Versions = Emitter->GetAllAvailableVersions();
+			if (Versions.IsEmpty()) Versions.Add(Emitter->GetExposedVersion());
+			for (const FNiagaraAssetVersion& Version : Versions)
+			{
+				const FGuid VersionGuid = Emitter->IsVersioningEnabled() ? Version.VersionGuid : FGuid();
+				CollectEmitterRenderers(FVersionedNiagaraEmitter(Emitter, VersionGuid), CollectedIds, OutRenderers);
+			}
+		}
+		OutRenderers.Sort([](const FReadAllNiagaraRendererIR& A, const FReadAllNiagaraRendererIR& B) { return A.Id < B.Id; });
+	}
+
+	static void CollectCurveDataInterface(
+		UNiagaraDataInterfaceCurveBase* CurveInterface,
+		const FString& OwnerGraphId,
+		TSet<FString>& CollectedIds,
+		TArray<FReadAllNiagaraCurveIR>& OutCurves)
+	{
+		if (!CurveInterface) return;
+		const FString Id = CurveInterface->GetPathName();
+		if (CollectedIds.Contains(Id)) return;
+		CollectedIds.Add(Id);
+
+		FReadAllNiagaraCurveIR Result;
+		Result.Id = Id;
+		Result.ObjectPath = CurveInterface->GetPathName();
+		Result.ClassPath = CurveInterface->GetClass()->GetPathName();
+		Result.OwnerGraphId = OwnerGraphId;
+		Result.ExposedName = CurveInterface->ExposedName.ToString();
+		Result.bUseLUT = CurveInterface->bUseLUT != 0;
+		Result.bExposeCurve = CurveInterface->bExposeCurve != 0;
+#if WITH_EDITORONLY_DATA
+		Result.CurveAssetPath = CurveInterface->CurveAsset ? CurveInterface->CurveAsset->GetPathName() : FString();
+#endif
+
+		TArray<UNiagaraDataInterfaceCurveBase::FCurveData> CurveChannels;
+		CurveInterface->GetCurveData(CurveChannels);
+		bool bHasRange = false;
+		for (const UNiagaraDataInterfaceCurveBase::FCurveData& CurveData : CurveChannels)
+		{
+			if (!CurveData.Curve) continue;
+			FReadAllNiagaraCurveChannelIR Channel;
+			Channel.Name = CurveData.Name.ToString();
+			Channel.PreInfinityExtrapolation = NiagaraEnumName(CurveData.Curve->PreInfinityExtrap.GetValue());
+			Channel.PostInfinityExtrapolation = NiagaraEnumName(CurveData.Curve->PostInfinityExtrap.GetValue());
+			for (const FRichCurveKey& Key : CurveData.Curve->GetConstRefOfKeys())
+			{
+				FReadAllNiagaraCurveKeyIR KeyIR;
+				KeyIR.Time = Key.Time;
+				KeyIR.Value = Key.Value;
+				KeyIR.Interpolation = NiagaraEnumName(Key.InterpMode.GetValue());
+				KeyIR.TangentMode = NiagaraEnumName(Key.TangentMode.GetValue());
+				KeyIR.TangentWeightMode = NiagaraEnumName(Key.TangentWeightMode.GetValue());
+				KeyIR.ArriveTangent = Key.ArriveTangent;
+				KeyIR.ArriveTangentWeight = Key.ArriveTangentWeight;
+				KeyIR.LeaveTangent = Key.LeaveTangent;
+				KeyIR.LeaveTangentWeight = Key.LeaveTangentWeight;
+				Channel.Keys.Add(MoveTemp(KeyIR));
+				if (!bHasRange)
+				{
+					Result.MinTime = Key.Time;
+					Result.MaxTime = Key.Time;
+					bHasRange = true;
+				}
+				else
+				{
+					Result.MinTime = FMath::Min(Result.MinTime, Key.Time);
+					Result.MaxTime = FMath::Max(Result.MaxTime, Key.Time);
+				}
+			}
+			Result.Channels.Add(MoveTemp(Channel));
+		}
+		OutCurves.Add(MoveTemp(Result));
+	}
+
+	static void CollectCurvesUnderObject(
+		UObject* Root,
+		const FString& OwnerGraphId,
+		TSet<FString>& CollectedIds,
+		TArray<FReadAllNiagaraCurveIR>& OutCurves)
+	{
+		if (!Root) return;
+		if (UNiagaraDataInterfaceCurveBase* RootCurve = Cast<UNiagaraDataInterfaceCurveBase>(Root))
+		{
+			CollectCurveDataInterface(RootCurve, OwnerGraphId, CollectedIds, OutCurves);
+		}
+		TArray<UObject*> Objects;
+		GetObjectsWithOuter(Root, Objects, true);
+		for (UObject* Object : Objects)
+		{
+			CollectCurveDataInterface(Cast<UNiagaraDataInterfaceCurveBase>(Object), OwnerGraphId, CollectedIds, OutCurves);
+		}
+	}
+
+	static void CollectNiagaraCurves(
+		UObject* Asset,
+		const TArray<FReadAllGraphIR>& Graphs,
+		TArray<FReadAllNiagaraCurveIR>& OutCurves)
+	{
+		OutCurves.Reset();
+		TSet<FString> CollectedIds;
+		for (const FReadAllGraphIR& Graph : Graphs)
+		{
+			if (UNiagaraGraph* SourceGraph = Cast<UNiagaraGraph>(StaticFindObject(UNiagaraGraph::StaticClass(), nullptr, *Graph.Id)))
+			{
+				CollectCurvesUnderObject(SourceGraph, Graph.Id, CollectedIds, OutCurves);
+			}
+		}
+		CollectCurvesUnderObject(Asset, FString(), CollectedIds, OutCurves);
+		OutCurves.Sort([](const FReadAllNiagaraCurveIR& A, const FReadAllNiagaraCurveIR& B) { return A.Id < B.Id; });
+	}
+
+	static void CollectNiagaraDetails(
+		UObject* Asset,
+		const TArray<FReadAllGraphIR>& Graphs,
+		TArray<FReadAllNiagaraRendererIR>& OutRenderers,
+		TArray<FReadAllNiagaraCurveIR>& OutCurves)
+	{
+		OutRenderers.Reset();
+		OutCurves.Reset();
+		if (!Asset || (!Asset->IsA<UNiagaraSystem>() && !Asset->IsA<UNiagaraEmitter>() && !Asset->IsA<UNiagaraScript>())) return;
+		CollectNiagaraRenderers(Asset, OutRenderers);
+		CollectNiagaraCurves(Asset, Graphs, OutCurves);
 	}
 
 	static void CollectGraphIR(UObject* Asset, TArray<FReadAllGraphIR>& OutGraphs)
@@ -986,6 +1254,7 @@ FReadAllAssetDocumentIR FAssetInsightExporter::BuildDocument(const FAssetData& A
 	CollectParameterClues(Asset, Document.ParameterClues);
 	AssetInsightImpl::CollectRelationships(AssetData, Document.Dependencies, Document.Referencers);
 	AssetInsightImpl::CollectGraphIR(Asset, Document.Graphs);
+	AssetInsightImpl::CollectNiagaraDetails(Asset, Document.Graphs, Document.NiagaraRenderers, Document.NiagaraCurves);
 	AssetInsightImpl::CollectFeatureTags(Asset, Document.ParameterClues, Document.Graphs, Document.Dependencies, Document.FeatureTags);
 	Document.ArtistFocus = AssetInsightImpl::BuildDynamicArtistFocus(Asset, Document.ParameterClues, Document.FeatureTags);
 	Document.SuggestedPrompt = AssetInsightImpl::BuildDynamicPrompt(Asset, Document.ParameterClues, Document.FeatureTags, Settings);

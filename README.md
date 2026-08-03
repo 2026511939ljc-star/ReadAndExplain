@@ -2,7 +2,7 @@
 
 ReadAllandExplains is an Unreal Engine 5.7 editor plugin that exports selected Unreal assets as compact, AI-readable documents. It preserves useful technical structure while adding artist-friendly summaries, dependency context, feature tags, and ready-to-use AI prompts.
 
-> **Release status:** `4.2.0-preview.1` is a preview release. Test it in a copy of your project before adopting it in production.
+> **Release status:** `4.3.0-preview.1` is a preview release. Test it in a copy of your project before adopting it in production.
 
 ## Features
 
@@ -21,7 +21,7 @@ ReadAllandExplains is an Unreal Engine 5.7 editor plugin that exports selected U
 | Blueprint | Reflected properties, graphs, nodes, pins, defaults, links, and native clipboard text |
 | Material and Material Instance | Material properties, parameters, graph structure, expressions, connections, functions, and inheritance context |
 | Material Function | Function graph, expressions, pins, links, and dependencies |
-| Niagara System, Emitter, and Script | Source structure, parameters, modules, readable technical details, and Schema 2 graph/node/pin/link IR |
+| Niagara System, Emitter, and Script | Source structure, parameters, modules, renderer details, source curve keys, project module graphs, and Schema 2 graph/node/pin/link IR |
 | Static Mesh | Bounds, LOD geometry statistics, material slots, UV-channel counts, and collision summary |
 | Texture | Resolution, mip count, compression, texture group, sRGB, and virtual-texture metadata |
 | Data Table | Row structure and complete table data |
@@ -132,14 +132,14 @@ Open **Editor Preferences > Plugins > ReadAllandExplains**.
 - **AI Prompt Mode**: `Explain`, `Review`, `Optimize`, `Trace`, or `Custom`.
 - **Custom Prompt**: appended when Custom prompt mode is selected.
 
-## What is new in 4.2.0-preview.1
+## What is new in 4.3.0-preview.1
 
-- Added unified Schema 2 graph IR for Niagara System, Emitter, and Script source graphs.
-- Captures stable graph, node, pin, and link data in `.meta.json` sidecars.
-- Distinguishes Niagara Parameter Map links from ordinary data links for future parameter-level DAG analysis.
-- Deduplicates shared source graphs across systems, emitters, and scripts.
-- Preserves the existing `_ReadableNiagara.md` detailed exporter and all current entry points.
-- Includes compact Markdown, asset insights, direct dependencies, and automation support introduced in earlier previews.
+- Exports Niagara renderer type, materials, source mode, attribute bindings, and editable properties.
+- Preserves original Float, Vector, and Color curve keys, interpolation, tangents, weights, and extrapolation modes.
+- Recursively expands project Niagara modules under `/Game/` with cycle detection, path deduplication, and a maximum depth of four.
+- Adds function reference path, callee graph, selected script version, and enabled state to function-call nodes.
+- Preserves the existing Schema 2 `graphs` structure and `_ReadableNiagara.md` detailed exporter.
+- Validated with a real UE 5.7 Niagara System containing renderer bindings, source curves, and custom project modules.
 
 
 ---
@@ -148,7 +148,7 @@ Open **Editor Preferences > Plugins > ReadAllandExplains**.
 
 ReadAllandExplains 是一个适用于 Unreal Engine 5.7 的编辑器插件，可将选中的 UE 资产导出成结构紧凑、方便 AI 阅读的文档。它在保留重要技术结构的同时，还会补充面向美术人员的概览、依赖关系、特征标签以及可直接交给 AI 使用的提示词。
 
-> **发布状态：** `4.2.0-preview.1` 是预览版本。用于正式项目之前，建议先在项目副本中测试。
+> **发布状态：** `4.3.0-preview.1` 是预览版本。用于正式项目之前，建议先在项目副本中测试。
 
 ## 主要功能
 
@@ -167,7 +167,7 @@ ReadAllandExplains 是一个适用于 Unreal Engine 5.7 的编辑器插件，可
 | Blueprint 蓝图 | 反射属性、Graph、节点、Pin、默认值、连接关系和 UE 原生剪贴板文本 |
 | Material／Material Instance | 材质属性、参数、图表结构、表达式、连接、材质函数及继承关系 |
 | Material Function | 函数图、表达式、Pin、连接和依赖关系 |
-| Niagara System／Emitter／Script | 源资产结构、参数、模块、可读技术信息，以及 Schema 2 Graph／Node／Pin／Link 统一 IR |
+| Niagara System／Emitter／Script | 源资产结构、参数、模块、Renderer 详情、源曲线 Key、项目模块内部图，以及 Schema 2 Graph／Node／Pin／Link 统一 IR |
 | Static Mesh | 包围盒、各级 LOD 几何统计、材质槽、UV 通道数量和碰撞摘要 |
 | Texture | 分辨率、Mip 数量、压缩设置、Texture Group、sRGB 和虚拟纹理元数据 |
 | Data Table | 行结构和完整表格数据 |
@@ -278,11 +278,11 @@ CurveTables/
 - **AI Prompt Mode**：可选 `Explain`、`Review`、`Optimize`、`Trace` 或 `Custom`。
 - **Custom Prompt**：选择 Custom 模式时追加的自定义提示词。
 
-## 4.2.0-preview.1 更新内容
+## 4.3.0-preview.1 更新内容
 
-- Niagara System、Emitter、Script 的源图已接入 Schema 2 统一图 IR。
-- 在 `.meta.json` 中输出稳定的 Graph、Node、Pin、Link 数据。
-- Parameter Map 连线与普通数据连线分别标记，为后续参数级 DAG 做准备。
-- 对 System、Emitter、Script 间共享的源图按路径去重。
-- 原 `_ReadableNiagara.md` 详细文本导出器和现有入口保持不变。
-- 延续此前 Preview 的 Compact Markdown、资产洞察、直接依赖和自动化导出能力。
+- 输出 Niagara Renderer 类型、材质、Source Mode、属性绑定和可编辑配置。
+- 保留 Float、Vector、Color 曲线的原始 Key、插值、切线、权重及前后外推模式。
+- 递归展开 `/Game/` 下项目自定义 Niagara 模块，带循环检测、路径去重和最大深度 4 限制。
+- 函数调用节点新增引用路径、被调图、选中脚本版本和启用状态。
+- 保留现有 Schema 2 `graphs` 结构与 `_ReadableNiagara.md` 详细导出器兼容。
+- 已使用 UE 5.7 真实 Niagara System 验证 Renderer 绑定、源曲线和项目自定义模块读取。

@@ -1,9 +1,9 @@
 {
 	"FileVersion": 3,
-	"Version": 6,
-	"VersionName": "4.2.0-preview.1",
+	"Version": 7,
+	"VersionName": "4.3.0-preview.1",
 	"FriendlyName": "ReadAllandExplains",
-	"Description": "UE asset AI context compiler with compact Markdown and Schema 2 graph IR for Blueprint, Material and Niagara, while preserving the legacy detailed exporters.",
+	"Description": "UE asset AI context compiler with Niagara renderer details, source curve keys and recursive project module graphs in Schema 2 IR.",
 	"Category": "Editor",
 	"CreatedBy": "Aoife",
 	"CreatedByURL": "",
