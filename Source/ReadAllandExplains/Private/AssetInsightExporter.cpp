@@ -26,8 +26,12 @@
 #include "Materials/MaterialFunctionInterface.h"
 #include "Materials/MaterialInterface.h"
 #include "NiagaraEmitter.h"
+#include "NiagaraEmitterHandle.h"
+#include "NiagaraGraph.h"
+#include "NiagaraNodeFunctionCall.h"
 #include "NiagaraParameterStore.h"
 #include "NiagaraScript.h"
+#include "NiagaraScriptSource.h"
 #include "NiagaraSystem.h"
 #include "UObject/UnrealType.h"
 
@@ -591,6 +595,21 @@ namespace AssetInsightImpl
 			: FString::Printf(TEXT("%s:pin:%d"), *NodeId, PinIndex);
 	}
 
+	static FString NiagaraPinType(const UEdGraphPin* Pin)
+	{
+		if (!Pin) return FString();
+		FString Type = Pin->PinType.PinCategory.ToString();
+		if (!Pin->PinType.PinSubCategory.IsNone())
+		{
+			Type += TEXT(":") + Pin->PinType.PinSubCategory.ToString();
+		}
+		if (const UObject* TypeObject = Pin->PinType.PinSubCategoryObject.Get())
+		{
+			Type += TEXT(":") + TypeObject->GetPathName();
+		}
+		return Type;
+	}
+
 	static void CollectBlueprintGraphs(const UBlueprint* Blueprint, TArray<FReadAllGraphIR>& OutGraphs)
 	{
 		if (!Blueprint) return;
@@ -670,6 +689,171 @@ namespace AssetInsightImpl
 		}
 	}
 
+	static UNiagaraGraph* GetNiagaraGraphFromSource(const UNiagaraScriptSourceBase* SourceBase)
+	{
+		const UNiagaraScriptSource* Source = Cast<UNiagaraScriptSource>(SourceBase);
+		return Source ? Source->NodeGraph : nullptr;
+	}
+
+	static void CollectNiagaraSourceGraph(
+		UNiagaraGraph* SourceGraph,
+		const FString& GraphKind,
+		TSet<FString>& CollectedGraphIds,
+		TArray<FReadAllGraphIR>& OutGraphs)
+	{
+		if (!SourceGraph) return;
+		const FString GraphId = SourceGraph->GetPathName();
+		if (CollectedGraphIds.Contains(GraphId)) return;
+		CollectedGraphIds.Add(GraphId);
+
+		FReadAllGraphIR Graph;
+		Graph.Id = GraphId;
+		Graph.Name = SourceGraph->GetName();
+		Graph.Kind = GraphKind;
+
+		TMap<const UEdGraphNode*, FString> NodeIds;
+		for (const UEdGraphNode* Node : SourceGraph->Nodes)
+		{
+			if (Node) NodeIds.Add(Node, StableObjectId(Node->NodeGuid, Node, TEXT("niagara-node:")));
+		}
+
+		for (const UEdGraphNode* Node : SourceGraph->Nodes)
+		{
+			if (!Node) continue;
+			const FString NodeId = NodeIds.FindChecked(Node);
+			FReadAllGraphNodeIR NodeIR;
+			NodeIR.Id = NodeId;
+			NodeIR.Name = Node->GetName();
+			NodeIR.ClassName = Node->GetClass()->GetName();
+			NodeIR.Title = CleanGraphText(Node->GetNodeTitle(ENodeTitleType::ListView).ToString());
+			if (const UNiagaraNodeFunctionCall* FunctionCall = Cast<UNiagaraNodeFunctionCall>(Node))
+			{
+				NodeIR.Title = FunctionCall->GetFunctionName();
+				if (FunctionCall->FunctionScript)
+				{
+					NodeIR.Comment = FunctionCall->FunctionScript->GetPathName();
+				}
+			}
+			if (NodeIR.Title.IsEmpty()) NodeIR.Title = NodeIR.Name;
+			if (NodeIR.Comment.IsEmpty()) NodeIR.Comment = CleanGraphText(Node->NodeComment);
+			NodeIR.PositionX = Node->NodePosX;
+			NodeIR.PositionY = Node->NodePosY;
+
+			for (int32 PinIndex = 0; PinIndex < Node->Pins.Num(); ++PinIndex)
+			{
+				const UEdGraphPin* Pin = Node->Pins[PinIndex];
+				if (!Pin) continue;
+				FReadAllGraphPinIR PinIR;
+				PinIR.Id = BlueprintPinId(NodeId, Pin, PinIndex);
+				PinIR.Name = Pin->PinName.ToString();
+				PinIR.Direction = Pin->Direction == EGPD_Output ? TEXT("Output") : TEXT("Input");
+				PinIR.Type = NiagaraPinType(Pin);
+				PinIR.DefaultValue = Pin->GetDefaultAsString();
+				NodeIR.Pins.Add(MoveTemp(PinIR));
+			}
+			Graph.Nodes.Add(MoveTemp(NodeIR));
+		}
+
+		for (const UEdGraphNode* Node : SourceGraph->Nodes)
+		{
+			if (!Node) continue;
+			const FString SourceNodeId = NodeIds.FindChecked(Node);
+			for (int32 PinIndex = 0; PinIndex < Node->Pins.Num(); ++PinIndex)
+			{
+				const UEdGraphPin* Pin = Node->Pins[PinIndex];
+				if (!Pin || Pin->Direction != EGPD_Output) continue;
+				for (const UEdGraphPin* LinkedPin : Pin->LinkedTo)
+				{
+					if (!LinkedPin) continue;
+					const UEdGraphNode* TargetNode = LinkedPin->GetOwningNode();
+					const FString* TargetNodeId = NodeIds.Find(TargetNode);
+					if (!TargetNodeId) continue;
+					const int32 TargetPinIndex = TargetNode->Pins.IndexOfByKey(const_cast<UEdGraphPin*>(LinkedPin));
+					if (TargetPinIndex == INDEX_NONE) continue;
+					const FString SourceType = NiagaraPinType(Pin);
+					const FString TargetType = NiagaraPinType(LinkedPin);
+					const bool bParameterMap = SourceType.Contains(TEXT("ParameterMap"), ESearchCase::IgnoreCase)
+						|| TargetType.Contains(TEXT("ParameterMap"), ESearchCase::IgnoreCase);
+					Graph.Links.Add({
+						SourceNodeId,
+						BlueprintPinId(SourceNodeId, Pin, PinIndex),
+						*TargetNodeId,
+						BlueprintPinId(*TargetNodeId, LinkedPin, TargetPinIndex),
+						bParameterMap ? TEXT("parameter-map") : TEXT("data")});
+
+				}
+			}
+		}
+
+		SortGraph(Graph);
+		OutGraphs.Add(MoveTemp(Graph));
+	}
+
+	static void CollectNiagaraScriptGraphs(
+		UNiagaraScript* Script,
+		const FString& GraphKind,
+		TSet<FString>& CollectedGraphIds,
+		TArray<FReadAllGraphIR>& OutGraphs)
+	{
+		if (!Script) return;
+		TArray<FNiagaraAssetVersion> Versions = Script->GetAllAvailableVersions();
+		if (Versions.IsEmpty())
+		{
+			FNiagaraAssetVersion Fallback;
+			Fallback.VersionGuid = FGuid();
+			Versions.Add(Fallback);
+		}
+		for (const FNiagaraAssetVersion& Version : Versions)
+		{
+			const FGuid VersionGuid = Script->IsVersioningEnabled() ? Version.VersionGuid : FGuid();
+			CollectNiagaraSourceGraph(GetNiagaraGraphFromSource(Script->GetSource(VersionGuid)), GraphKind, CollectedGraphIds, OutGraphs);
+		}
+	}
+
+	static void CollectNiagaraEmitterVersionGraphs(
+		const FVersionedNiagaraEmitter& VersionedEmitter,
+		TSet<FString>& CollectedGraphIds,
+		TArray<FReadAllGraphIR>& OutGraphs)
+	{
+		FVersionedNiagaraEmitterData* Data = VersionedEmitter.GetEmitterData();
+		if (!Data) return;
+		CollectNiagaraSourceGraph(GetNiagaraGraphFromSource(Data->GraphSource), TEXT("NiagaraEmitterGraph"), CollectedGraphIds, OutGraphs);
+		TArray<UNiagaraScript*> Scripts;
+		Data->GetScripts(Scripts, false, false);
+		for (UNiagaraScript* Script : Scripts)
+		{
+			CollectNiagaraScriptGraphs(Script, TEXT("NiagaraEmitterScriptGraph"), CollectedGraphIds, OutGraphs);
+		}
+	}
+
+	static void CollectNiagaraGraphs(UObject* Asset, TArray<FReadAllGraphIR>& OutGraphs)
+	{
+		TSet<FString> CollectedGraphIds;
+		if (UNiagaraSystem* System = Cast<UNiagaraSystem>(Asset))
+		{
+			CollectNiagaraScriptGraphs(System->GetSystemSpawnScript(), TEXT("NiagaraSystemSpawnGraph"), CollectedGraphIds, OutGraphs);
+			CollectNiagaraScriptGraphs(System->GetSystemUpdateScript(), TEXT("NiagaraSystemUpdateGraph"), CollectedGraphIds, OutGraphs);
+			for (const FNiagaraEmitterHandle& Handle : System->GetEmitterHandles())
+			{
+				CollectNiagaraEmitterVersionGraphs(Handle.GetInstance(), CollectedGraphIds, OutGraphs);
+			}
+		}
+		else if (UNiagaraEmitter* Emitter = Cast<UNiagaraEmitter>(Asset))
+		{
+			TArray<FNiagaraAssetVersion> Versions = Emitter->GetAllAvailableVersions();
+			if (Versions.IsEmpty()) Versions.Add(Emitter->GetExposedVersion());
+			for (const FNiagaraAssetVersion& Version : Versions)
+			{
+				const FGuid VersionGuid = Emitter->IsVersioningEnabled() ? Version.VersionGuid : FGuid();
+				CollectNiagaraEmitterVersionGraphs(FVersionedNiagaraEmitter(Emitter, VersionGuid), CollectedGraphIds, OutGraphs);
+			}
+		}
+		else if (UNiagaraScript* Script = Cast<UNiagaraScript>(Asset))
+		{
+			CollectNiagaraScriptGraphs(Script, TEXT("NiagaraScriptGraph"), CollectedGraphIds, OutGraphs);
+		}
+	}
+
 	static void CollectGraphIR(UObject* Asset, TArray<FReadAllGraphIR>& OutGraphs)
 	{
 		OutGraphs.Reset();
@@ -689,6 +873,10 @@ namespace AssetInsightImpl
 		else if (const UBlueprint* Blueprint = Cast<UBlueprint>(Asset))
 		{
 			CollectBlueprintGraphs(Blueprint, OutGraphs);
+		}
+		else if (Asset->IsA<UNiagaraSystem>() || Asset->IsA<UNiagaraEmitter>() || Asset->IsA<UNiagaraScript>())
+		{
+			CollectNiagaraGraphs(Asset, OutGraphs);
 		}
 	}
 }
