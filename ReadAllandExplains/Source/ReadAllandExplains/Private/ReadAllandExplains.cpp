@@ -6,6 +6,7 @@
 #include "AssetInsightExporter.h"
 #include "MaterialToTextExporter.h"
 #include "NiagaraToTextExporter.h"
+#include "ReadAllandExplainsSettings.h"
 #include "Blueprint/BlueprintSupport.h"
 #include "Engine/Blueprint.h"
 #include "Engine/CurveTable.h"
@@ -28,6 +29,8 @@
 #include "Misc/Paths.h"
 #include "HAL/PlatformProcess.h"
 #include "HAL/PlatformFileManager.h"
+#include "HAL/IConsoleManager.h"
+#include "UObject/SoftObjectPath.h"
 // 引用查看器（Reference Viewer）集成所需
 #include "GraphEditor.h"
 #include "EdGraph/EdGraph.h"
@@ -83,11 +86,40 @@ namespace ReadAllandExplainsExportImpl
 		if (!EnsureDir(Dir)) return FString();
 
 		const FString SavePath = Dir / (AssetName + FileSuffix);
-		if (FFileHelper::SaveStringToFile(Text, *SavePath, FFileHelper::EEncodingOptions::ForceUTF8WithoutBOM))
+		// Windows 上部分编辑器会把无 BOM 的 UTF-8 误判为本地 ANSI 编码，
+		// 导致美术同学直接打开中文文档时看到乱码。统一写成带 BOM 的 UTF-8，
+		// 内容仍然是标准 UTF-8，同时兼容记事本、Office、Markdown 编辑器和 AI 工具。
+		if (FFileHelper::SaveStringToFile(Text, *SavePath, FFileHelper::EEncodingOptions::ForceUTF8))
 		{
 			return SavePath;
 		}
 		return FString();
+	}
+
+	static FString SaveAssetDocument(
+		const FAssetData& AssetData,
+		UObject* Asset,
+		const FString& TechnicalDocument,
+		const FString& Directory,
+		const FString& FileSuffix)
+	{
+		if (!Asset || TechnicalDocument.IsEmpty()) return FString();
+
+		const UReadAllandExplainsSettings* Settings = GetDefault<UReadAllandExplainsSettings>();
+		const EReadAllExportMode Mode = Settings ? Settings->ExportMode : EReadAllExportMode::Compact;
+		const FReadAllAssetDocumentIR Document = FAssetInsightExporter::BuildDocument(AssetData, Asset, TechnicalDocument);
+		const FString SavedPath = SaveText(Document.RenderMarkdown(Mode), Directory, Asset->GetName(), FileSuffix);
+		if (SavedPath.IsEmpty()) return FString();
+
+		if (!Settings || Settings->bWriteMetadataJson)
+		{
+			const FString MetadataPath = SaveText(Document.RenderMetadataJson(Mode), Directory, Asset->GetName(), TEXT(".meta.json"));
+			if (MetadataPath.IsEmpty())
+			{
+				UE_LOG(LogTemp, Warning, TEXT("ReadAllandExplains could not write metadata for %s"), *Asset->GetPathName());
+			}
+		}
+		return SavedPath;
 	}
 
 	// 尝试把单个资产按类型导出；返回：0=成功, 1=失败（类型支持但导出空或保存失败）, 2=跳过（类型不支持）
@@ -101,10 +133,7 @@ namespace ReadAllandExplainsExportImpl
 		// 蓝图
 		if (UBlueprint* Blueprint = Cast<UBlueprint>(Obj))
 		{
-			const FString Text = FAssetInsightExporter::DecorateDocument(
-				AssetData, Blueprint, FBlueprintToTextExporter::ExportBlueprintToText(Blueprint));
-			if (Text.IsEmpty()) return EExportResult::Failed;
-			const FString Saved = SaveText(Text, GetBlueprintExportDir(), Blueprint->GetName(), TEXT("_ReadableCode.txt"));
+			const FString Saved = SaveAssetDocument(AssetData, Blueprint, FBlueprintToTextExporter::ExportBlueprintToText(Blueprint), GetBlueprintExportDir(), TEXT("_ReadableCode.txt"));
 			if (Saved.IsEmpty()) return EExportResult::Failed;
 			OutSavedPath = Saved;
 			return EExportResult::Success;
@@ -113,10 +142,7 @@ namespace ReadAllandExplainsExportImpl
 		// 材质 / 材质实例（注意：UMaterialInstance 也是 UMaterialInterface）
 		if (UMaterialInterface* MatIface = Cast<UMaterialInterface>(Obj))
 		{
-			const FString Text = FAssetInsightExporter::DecorateDocument(
-				AssetData, MatIface, FMaterialToTextExporter::ExportMaterialToText(MatIface));
-			if (Text.IsEmpty()) return EExportResult::Failed;
-			const FString Saved = SaveText(Text, GetMaterialExportDir(), MatIface->GetName(), TEXT("_ReadableMaterial.md"));
+			const FString Saved = SaveAssetDocument(AssetData, MatIface, FMaterialToTextExporter::ExportMaterialToText(MatIface), GetMaterialExportDir(), TEXT("_ReadableMaterial.md"));
 			if (Saved.IsEmpty()) return EExportResult::Failed;
 			OutSavedPath = Saved;
 			return EExportResult::Success;
@@ -125,10 +151,7 @@ namespace ReadAllandExplainsExportImpl
 		// 材质函数
 		if (UMaterialFunctionInterface* MatFunc = Cast<UMaterialFunctionInterface>(Obj))
 		{
-			const FString Text = FAssetInsightExporter::DecorateDocument(
-				AssetData, MatFunc, FMaterialToTextExporter::ExportMaterialFunctionToText(MatFunc));
-			if (Text.IsEmpty()) return EExportResult::Failed;
-			const FString Saved = SaveText(Text, GetMaterialExportDir(), MatFunc->GetName(), TEXT("_ReadableMaterialFunction.md"));
+			const FString Saved = SaveAssetDocument(AssetData, MatFunc, FMaterialToTextExporter::ExportMaterialFunctionToText(MatFunc), GetMaterialExportDir(), TEXT("_ReadableMaterialFunction.md"));
 			if (Saved.IsEmpty()) return EExportResult::Failed;
 			OutSavedPath = Saved;
 			return EExportResult::Success;
@@ -137,10 +160,7 @@ namespace ReadAllandExplainsExportImpl
 		// Niagara System / Emitter / Script（Module、Dynamic Input 等也属于 UNiagaraScript）
 		if (Obj->IsA<UNiagaraSystem>() || Obj->IsA<UNiagaraEmitter>() || Obj->IsA<UNiagaraScript>())
 		{
-			const FString Text = FAssetInsightExporter::DecorateDocument(
-				AssetData, Obj, FNiagaraToTextExporter::ExportNiagaraAssetToText(Obj));
-			if (Text.IsEmpty()) return EExportResult::Failed;
-			const FString Saved = SaveText(Text, GetNiagaraExportDir(), Obj->GetName(), TEXT("_ReadableNiagara.md"));
+			const FString Saved = SaveAssetDocument(AssetData, Obj, FNiagaraToTextExporter::ExportNiagaraAssetToText(Obj), GetNiagaraExportDir(), TEXT("_ReadableNiagara.md"));
 			if (Saved.IsEmpty()) return EExportResult::Failed;
 			OutSavedPath = Saved;
 			return EExportResult::Success;
@@ -148,13 +168,11 @@ namespace ReadAllandExplainsExportImpl
 
 		if (FCommonAssetToTextExporter::Supports(Obj))
 		{
-			const FString Text = FAssetInsightExporter::DecorateDocument(
-				AssetData, Obj, FCommonAssetToTextExporter::ExportAssetToText(Obj));
-			if (Text.IsEmpty()) return EExportResult::Failed;
-			const FString Saved = SaveText(
-				Text,
+			const FString Saved = SaveAssetDocument(
+				AssetData,
+				Obj,
+				FCommonAssetToTextExporter::ExportAssetToText(Obj),
 				GetCommonAssetExportDir(Obj),
-				Obj->GetName(),
 				FCommonAssetToTextExporter::GetFileSuffix(Obj));
 			if (Saved.IsEmpty()) return EExportResult::Failed;
 			OutSavedPath = Saved;
@@ -243,18 +261,99 @@ static FBatchExportResult ExportAssetDataList(const TArray<FAssetData>& AssetLis
 	{
 		const FString IndexText = FAssetInsightExporter::BuildBatchIndex(R.ExportedAssets, R.SavedPaths);
 		SaveText(IndexText, GetExportRootDir(), TEXT("index"), TEXT(".md"));
+		const FString IndexJson = FAssetInsightExporter::BuildBatchIndexJson(R.ExportedAssets, R.SavedPaths);
+		SaveText(IndexJson, GetExportRootDir(), TEXT("index"), TEXT(".json"));
 	}
 	return R;
+}
+
+static TArray<FAssetData> ResolveConsoleAssets(const TArray<FString>& Args)
+{
+	if (Args.IsEmpty())
+	{
+		return GetSelectedAssetsFromContentBrowser();
+	}
+
+	TArray<FAssetData> Assets;
+	for (FString ObjectPath : Args)
+	{
+		ObjectPath.TrimQuotesInline();
+		ObjectPath.TrimStartAndEndInline();
+		if (ObjectPath.IsEmpty()) continue;
+
+		UObject* Asset = FSoftObjectPath(ObjectPath).TryLoad();
+		if (!Asset)
+		{
+			UE_LOG(LogTemp, Error, TEXT("ReadAllandExplains could not load asset: %s"), *ObjectPath);
+			continue;
+		}
+		Assets.Emplace(Asset);
+	}
+	return Assets;
+}
+
+static void ExportAssetsFromConsole(const TArray<FString>& Args)
+{
+	const TArray<FAssetData> Assets = ResolveConsoleAssets(Args);
+	if (Assets.IsEmpty())
+	{
+		UE_LOG(LogTemp, Warning, TEXT("ReadAllandExplains.ExportAssets found no assets. Pass one or more object paths, for example /Game/Folder/M_Asset.M_Asset."));
+		return;
+	}
+
+	const FBatchExportResult Result = ExportAssetDataList(Assets);
+	UE_LOG(LogTemp, Display, TEXT("ReadAllandExplains export finished: success=%d failed=%d skipped=%d output=%s"),
+		Result.SuccessCount,
+		Result.FailedCount,
+		Result.SkippedCount,
+		*GetExportRootDir());
+}
+
+static IConsoleObject* ExportAssetsConsoleCommand = nullptr;
+static IConsoleObject* LegacyExportAssetsConsoleCommand = nullptr;
+
+static void RegisterExportConsoleCommands()
+{
+	IConsoleManager& ConsoleManager = IConsoleManager::Get();
+	const TCHAR* Help = TEXT("Export UE assets as AI-readable documents. Usage: ReadAllandExplains.ExportAssets /Game/Path/Asset.Asset. With no paths, exports the current Content Browser selection.");
+	ExportAssetsConsoleCommand = ConsoleManager.RegisterConsoleCommand(
+		TEXT("ReadAllandExplains.ExportAssets"),
+		Help,
+		FConsoleCommandWithArgsDelegate::CreateStatic(&ExportAssetsFromConsole),
+		ECVF_Default);
+	LegacyExportAssetsConsoleCommand = ConsoleManager.RegisterConsoleCommand(
+		TEXT("GetTheMeaning.ExportAssets"),
+		Help,
+		FConsoleCommandWithArgsDelegate::CreateStatic(&ExportAssetsFromConsole),
+		ECVF_Default);
+}
+
+static void UnregisterExportConsoleCommands()
+{
+	IConsoleManager& ConsoleManager = IConsoleManager::Get();
+	if (ExportAssetsConsoleCommand)
+	{
+		ConsoleManager.UnregisterConsoleObject(ExportAssetsConsoleCommand, false);
+		ExportAssetsConsoleCommand = nullptr;
+	}
+	if (LegacyExportAssetsConsoleCommand)
+	{
+		ConsoleManager.UnregisterConsoleObject(LegacyExportAssetsConsoleCommand, false);
+		LegacyExportAssetsConsoleCommand = nullptr;
+	}
 }
 
 static void NotifyBatchResult(const FBatchExportResult& R)
 {
 	const FString RootDir = GetExportRootDir();
+	const UReadAllandExplainsSettings* Settings = GetDefault<UReadAllandExplainsSettings>();
+	const FString ModeName = ReadAllExportModeToString(Settings ? Settings->ExportMode : EReadAllExportMode::Compact);
 	FNotificationInfo Info(FText::Format(
-		LOCTEXT("BatchExportSummary", "AI 可读文档导出完成：成功 {0}，失败 {1}，跳过 {2}。\n输出目录：{3}"),
+		LOCTEXT("BatchExportSummary", "AI 可读文档导出完成：成功 {0}，失败 {1}，跳过 {2}。\n模式：{3}\n输出目录：{4}"),
 		FText::AsNumber(R.SuccessCount),
 		FText::AsNumber(R.FailedCount),
 		FText::AsNumber(R.SkippedCount),
+		FText::FromString(ModeName),
 		FText::FromString(RootDir)
 	));
 	Info.ExpireDuration = (R.FailedCount > 0) ? 8.0f : 5.0f;
@@ -327,11 +426,13 @@ static void ExportReferenceViewerSelectionToAIDocs(const UEdGraph* OwnerGraph)
 
 void FReadAllandExplainsModule::StartupModule()
 {
+	RegisterExportConsoleCommands();
 	UToolMenus::RegisterStartupCallback(FSimpleMulticastDelegate::FDelegate::CreateRaw(this, &FReadAllandExplainsModule::RegisterMenus));
 }
 
 void FReadAllandExplainsModule::ShutdownModule()
 {
+	UnregisterExportConsoleCommands();
 	UToolMenus::UnRegisterStartupCallback(this);
 	UToolMenus::UnregisterOwner(this);
 }
