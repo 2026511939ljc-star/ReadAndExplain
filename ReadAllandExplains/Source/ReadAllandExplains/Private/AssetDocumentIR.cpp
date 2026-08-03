@@ -132,6 +132,69 @@ namespace ReadAllDocumentIRImpl
 		}
 	}
 
+	static void AppendNiagaraDetails(const FReadAllAssetDocumentIR& Document, const EReadAllExportMode Mode, FString& Out)
+	{
+		if (Document.NiagaraRenderers.IsEmpty() && Document.NiagaraCurves.IsEmpty()) return;
+
+		Out += TEXT("---\n\n## Niagara 表现细节\n\n");
+		if (!Document.NiagaraRenderers.IsEmpty())
+		{
+			Out += TEXT("### Renderers\n\n");
+			Out += TEXT("| Emitter | Renderer | 类型 | 启用 | Source | 材质 | 绑定数 |\n");
+			Out += TEXT("|---------|----------|------|:----:|--------|------|------:|\n");
+			for (const FReadAllNiagaraRendererIR& Renderer : Document.NiagaraRenderers)
+			{
+				Out += TEXT("| ") + FAssetTextSnapshot::MarkdownCell(Renderer.EmitterPath)
+					+ TEXT(" | ") + FAssetTextSnapshot::MarkdownCell(Renderer.Name)
+					+ TEXT(" | ") + FAssetTextSnapshot::MarkdownCell(Renderer.ClassPath)
+					+ TEXT(" | ") + (Renderer.bEnabled ? TEXT("true") : TEXT("false"))
+					+ TEXT(" | ") + FAssetTextSnapshot::MarkdownCell(Renderer.SourceMode)
+					+ TEXT(" | ") + FAssetTextSnapshot::MarkdownCell(FString::Join(Renderer.Materials, TEXT(", ")))
+					+ FString::Printf(TEXT(" | %d |\n"), Renderer.Bindings.Num());
+			}
+			Out += TEXT("\n");
+
+			if (ReadAllExportModeIncludes(Mode, EReadAllExportMode::Full))
+			{
+				for (const FReadAllNiagaraRendererIR& Renderer : Document.NiagaraRenderers)
+				{
+					Out += TEXT("#### ") + Renderer.Name + TEXT(" 绑定\n\n");
+					Out += TEXT("| 显示名 | Niagara 变量 | 数据集名 | 类型 | 来源 | 有效 | 源中存在 |\n");
+					Out += TEXT("|--------|--------------|----------|------|------|:----:|:--------:|\n");
+					for (const FReadAllNiagaraRendererBindingIR& Binding : Renderer.Bindings)
+					{
+						Out += TEXT("| ") + FAssetTextSnapshot::MarkdownCell(Binding.DisplayName)
+							+ TEXT(" | ") + FAssetTextSnapshot::MarkdownCell(Binding.VariableName)
+							+ TEXT(" | ") + FAssetTextSnapshot::MarkdownCell(Binding.DataSetName)
+							+ TEXT(" | ") + FAssetTextSnapshot::MarkdownCell(Binding.Type)
+							+ TEXT(" | ") + FAssetTextSnapshot::MarkdownCell(Binding.SourceMode)
+							+ TEXT(" | ") + (Binding.bValid ? TEXT("true") : TEXT("false"))
+							+ TEXT(" | ") + (Binding.bExistsOnSource ? TEXT("true") : TEXT("false")) + TEXT(" |\n");
+					}
+					if (Renderer.Bindings.IsEmpty()) Out += TEXT("| (无绑定) | | | | | | |\n");
+					Out += TEXT("\n");
+				}
+			}
+		}
+
+		if (!Document.NiagaraCurves.IsEmpty())
+		{
+			Out += TEXT("### Curves\n\n");
+			Out += TEXT("| 曲线对象 | 类型 | 通道 | Keys | 时间范围 | 外部资产 |\n");
+			Out += TEXT("|----------|------|------|-----:|----------|----------|\n");
+			for (const FReadAllNiagaraCurveIR& Curve : Document.NiagaraCurves)
+			{
+				int32 KeyCount = 0;
+				for (const FReadAllNiagaraCurveChannelIR& Channel : Curve.Channels) KeyCount += Channel.Keys.Num();
+				Out += TEXT("| ") + FAssetTextSnapshot::MarkdownCell(Curve.ObjectPath)
+					+ TEXT(" | ") + FAssetTextSnapshot::MarkdownCell(Curve.ClassPath)
+					+ FString::Printf(TEXT(" | %d | %d | %g - %g | "), Curve.Channels.Num(), KeyCount, Curve.MinTime, Curve.MaxTime)
+					+ FAssetTextSnapshot::MarkdownCell(Curve.CurveAssetPath) + TEXT(" |\n");
+			}
+			Out += TEXT("\n- 每个通道的原始 Key、插值、切线与外推模式已写入 `.meta.json`。\n\n");
+		}
+	}
+
 	static TSharedRef<FJsonObject> MakePinJson(const FReadAllGraphPinIR& Pin)
 	{
 		TSharedRef<FJsonObject> Json = MakeShared<FJsonObject>();
@@ -151,6 +214,10 @@ namespace ReadAllDocumentIRImpl
 		Json->SetStringField(TEXT("className"), Node.ClassName);
 		Json->SetStringField(TEXT("title"), Node.Title);
 		Json->SetStringField(TEXT("comment"), Node.Comment);
+		Json->SetStringField(TEXT("referencePath"), Node.ReferencePath);
+		Json->SetStringField(TEXT("calleeGraphId"), Node.CalleeGraphId);
+		Json->SetStringField(TEXT("selectedVersion"), Node.SelectedVersion);
+		Json->SetBoolField(TEXT("enabled"), Node.bEnabled);
 		Json->SetNumberField(TEXT("positionX"), Node.PositionX);
 		Json->SetNumberField(TEXT("positionY"), Node.PositionY);
 		TArray<TSharedPtr<FJsonValue>> Pins;
@@ -193,6 +260,91 @@ namespace ReadAllDocumentIRImpl
 		Json->SetArrayField(TEXT("links"), Links);
 		return Json;
 	}
+
+	static TSharedRef<FJsonObject> MakeRendererJson(const FReadAllNiagaraRendererIR& Renderer)
+	{
+		TSharedRef<FJsonObject> Json = MakeShared<FJsonObject>();
+		Json->SetStringField(TEXT("id"), Renderer.Id);
+		Json->SetStringField(TEXT("emitterPath"), Renderer.EmitterPath);
+		Json->SetStringField(TEXT("emitterVersion"), Renderer.EmitterVersion);
+		Json->SetNumberField(TEXT("index"), Renderer.Index);
+		Json->SetStringField(TEXT("name"), Renderer.Name);
+		Json->SetStringField(TEXT("classPath"), Renderer.ClassPath);
+		Json->SetStringField(TEXT("sourceMode"), Renderer.SourceMode);
+		Json->SetBoolField(TEXT("enabled"), Renderer.bEnabled);
+		Json->SetArrayField(TEXT("materials"), MakeStringArray(Renderer.Materials));
+
+		TArray<TSharedPtr<FJsonValue>> Bindings;
+		for (const FReadAllNiagaraRendererBindingIR& Binding : Renderer.Bindings)
+		{
+			TSharedRef<FJsonObject> BindingJson = MakeShared<FJsonObject>();
+			BindingJson->SetStringField(TEXT("displayName"), Binding.DisplayName);
+			BindingJson->SetStringField(TEXT("variableName"), Binding.VariableName);
+			BindingJson->SetStringField(TEXT("dataSetName"), Binding.DataSetName);
+			BindingJson->SetStringField(TEXT("type"), Binding.Type);
+			BindingJson->SetStringField(TEXT("sourceMode"), Binding.SourceMode);
+			BindingJson->SetBoolField(TEXT("valid"), Binding.bValid);
+			BindingJson->SetBoolField(TEXT("existsOnSource"), Binding.bExistsOnSource);
+			Bindings.Add(MakeShared<FJsonValueObject>(BindingJson));
+		}
+		Json->SetArrayField(TEXT("bindings"), Bindings);
+
+		TArray<TSharedPtr<FJsonValue>> Properties;
+		for (const FReadAllNiagaraPropertyIR& Property : Renderer.Properties)
+		{
+			TSharedRef<FJsonObject> PropertyJson = MakeShared<FJsonObject>();
+			PropertyJson->SetStringField(TEXT("name"), Property.Name);
+			PropertyJson->SetStringField(TEXT("type"), Property.Type);
+			PropertyJson->SetStringField(TEXT("category"), Property.Category);
+			PropertyJson->SetStringField(TEXT("value"), Property.Value);
+			Properties.Add(MakeShared<FJsonValueObject>(PropertyJson));
+		}
+		Json->SetArrayField(TEXT("properties"), Properties);
+		return Json;
+	}
+
+	static TSharedRef<FJsonObject> MakeCurveJson(const FReadAllNiagaraCurveIR& Curve)
+	{
+		TSharedRef<FJsonObject> Json = MakeShared<FJsonObject>();
+		Json->SetStringField(TEXT("id"), Curve.Id);
+		Json->SetStringField(TEXT("objectPath"), Curve.ObjectPath);
+		Json->SetStringField(TEXT("classPath"), Curve.ClassPath);
+		Json->SetStringField(TEXT("ownerGraphId"), Curve.OwnerGraphId);
+		Json->SetStringField(TEXT("curveAssetPath"), Curve.CurveAssetPath);
+		Json->SetStringField(TEXT("exposedName"), Curve.ExposedName);
+		Json->SetBoolField(TEXT("useLUT"), Curve.bUseLUT);
+		Json->SetBoolField(TEXT("exposeCurve"), Curve.bExposeCurve);
+		Json->SetNumberField(TEXT("minTime"), Curve.MinTime);
+		Json->SetNumberField(TEXT("maxTime"), Curve.MaxTime);
+
+		TArray<TSharedPtr<FJsonValue>> Channels;
+		for (const FReadAllNiagaraCurveChannelIR& Channel : Curve.Channels)
+		{
+			TSharedRef<FJsonObject> ChannelJson = MakeShared<FJsonObject>();
+			ChannelJson->SetStringField(TEXT("name"), Channel.Name);
+			ChannelJson->SetStringField(TEXT("preInfinityExtrapolation"), Channel.PreInfinityExtrapolation);
+			ChannelJson->SetStringField(TEXT("postInfinityExtrapolation"), Channel.PostInfinityExtrapolation);
+			TArray<TSharedPtr<FJsonValue>> Keys;
+			for (const FReadAllNiagaraCurveKeyIR& Key : Channel.Keys)
+			{
+				TSharedRef<FJsonObject> KeyJson = MakeShared<FJsonObject>();
+				KeyJson->SetNumberField(TEXT("time"), Key.Time);
+				KeyJson->SetNumberField(TEXT("value"), Key.Value);
+				KeyJson->SetStringField(TEXT("interpolation"), Key.Interpolation);
+				KeyJson->SetStringField(TEXT("tangentMode"), Key.TangentMode);
+				KeyJson->SetStringField(TEXT("tangentWeightMode"), Key.TangentWeightMode);
+				KeyJson->SetNumberField(TEXT("arriveTangent"), Key.ArriveTangent);
+				KeyJson->SetNumberField(TEXT("arriveTangentWeight"), Key.ArriveTangentWeight);
+				KeyJson->SetNumberField(TEXT("leaveTangent"), Key.LeaveTangent);
+				KeyJson->SetNumberField(TEXT("leaveTangentWeight"), Key.LeaveTangentWeight);
+				Keys.Add(MakeShared<FJsonValueObject>(KeyJson));
+			}
+			ChannelJson->SetArrayField(TEXT("keys"), Keys);
+			Channels.Add(MakeShared<FJsonValueObject>(ChannelJson));
+		}
+		Json->SetArrayField(TEXT("channels"), Channels);
+		return Json;
+	}
 }
 
 FString FReadAllAssetDocumentIR::RenderMarkdown(const EReadAllExportMode Mode) const
@@ -211,6 +363,7 @@ FString FReadAllAssetDocumentIR::RenderMarkdown(const EReadAllExportMode Mode) c
 	ReadAllDocumentIRImpl::AppendParameterTable(ParameterClues, Out);
 	ReadAllDocumentIRImpl::AppendRelationships(*this, Out);
 	ReadAllDocumentIRImpl::AppendGraphIR(Graphs, Mode, Out);
+	ReadAllDocumentIRImpl::AppendNiagaraDetails(*this, Mode, Out);
 
 	if (Mode != EReadAllExportMode::Artist && !TechnicalMarkdown.IsEmpty())
 	{
@@ -264,6 +417,22 @@ FString FReadAllAssetDocumentIR::RenderMetadataJson(const EReadAllExportMode Mod
 		GraphValues.Add(MakeShared<FJsonValueObject>(ReadAllDocumentIRImpl::MakeGraphJson(Graph)));
 	}
 	Root->SetArrayField(TEXT("graphs"), GraphValues);
+
+	TArray<TSharedPtr<FJsonValue>> RendererValues;
+	RendererValues.Reserve(NiagaraRenderers.Num());
+	for (const FReadAllNiagaraRendererIR& Renderer : NiagaraRenderers)
+	{
+		RendererValues.Add(MakeShared<FJsonValueObject>(ReadAllDocumentIRImpl::MakeRendererJson(Renderer)));
+	}
+	Root->SetArrayField(TEXT("niagaraRenderers"), RendererValues);
+
+	TArray<TSharedPtr<FJsonValue>> CurveValues;
+	CurveValues.Reserve(NiagaraCurves.Num());
+	for (const FReadAllNiagaraCurveIR& Curve : NiagaraCurves)
+	{
+		CurveValues.Add(MakeShared<FJsonValueObject>(ReadAllDocumentIRImpl::MakeCurveJson(Curve)));
+	}
+	Root->SetArrayField(TEXT("niagaraCurves"), CurveValues);
 
 	FString Output;
 	TSharedRef<TJsonWriter<TCHAR, TPrettyJsonPrintPolicy<TCHAR>>> Writer = TJsonWriterFactory<TCHAR, TPrettyJsonPrintPolicy<TCHAR>>::Create(&Output);
