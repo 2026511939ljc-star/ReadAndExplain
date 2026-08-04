@@ -1050,8 +1050,9 @@ def serve(store: ContextPackStore) -> None:
                 raise ValueError("JSON-RPC message must be an object")
             outgoing = handle_request(store, request)
             if outgoing is not None:
-                sys.stdout.write(json.dumps(outgoing, ensure_ascii=False, separators=(",", ":")) + "\n")
-                sys.stdout.flush()
+                payload = (json.dumps(outgoing, ensure_ascii=False, separators=(",", ":")) + "\n").encode("utf-8")
+                sys.stdout.buffer.write(payload)
+                sys.stdout.buffer.flush()
         except Exception as exc:
             sys.stderr.write(f"{SERVER_NAME}: {type(exc).__name__}: {exc}\n")
             sys.stderr.flush()

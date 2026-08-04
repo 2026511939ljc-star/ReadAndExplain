@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -415,6 +416,28 @@ class ContractTests(unittest.TestCase):
         explicit = Path(self.temp.name) / "ExplicitExports"
         with mock.patch.dict(os.environ, {"READALL_EXPORT_ROOT": str(explicit)}, clear=False):
             self.assertEqual(explicit.resolve(), rae.default_export_root().resolve())
+
+    def test_stdio_emits_utf8_when_windows_text_encoding_is_cp936(self) -> None:
+        request = {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {"name": "get_asset_summary", "arguments": {"asset": "NS_Test"}},
+        }
+        environment = os.environ.copy()
+        environment["PYTHONIOENCODING"] = "cp936"
+        completed = subprocess.run(
+            [sys.executable, str(MODULE_PATH), "--root", str(self.root)],
+            input=(json.dumps(request, ensure_ascii=False) + "\n").encode("utf-8"),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=True,
+            env=environment,
+        )
+        response = json.loads(completed.stdout.decode("utf-8"))
+        data = response["result"]["structuredContent"]["data"]
+        self.assertTrue(any(parameter.get("name") == "泡沫强度" for parameter in data["parameters"]))
+        self.assertIn("泡沫强度".encode("utf-8"), completed.stdout)
 
 
 if __name__ == "__main__":
