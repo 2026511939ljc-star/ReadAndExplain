@@ -1,20 +1,25 @@
-# ReadAllandExplains vNext 工作副本
+# ReadAllandExplains 开发仓库
 
-这是从 `ReadAllandExplains 3.0 / UE 5.7` 冻结基线复制出的干净源码版本。
+本仓库是 ReadAllandExplains 的唯一开发源码仓库。当前开发线为 `iteration/vnext`，插件版本为 `4.6.0-preview.3`。外层目录名 `ReadAllandExplains_4.1.0_dev` 是历史工作目录名，不代表当前产品版本；版本只以插件清单为准。
 
-- 后续功能只修改本目录下的 `ReadAllandExplains`。
-- 不直接修改桌面原版或 `D:\UE5\Trans` 中的已安装版本。
-- `Binaries` 和 `Intermediate` 不进入版本记录，编译时重新生成。
-- 稳定基线位于 `versions/ReadAllandExplains_v3.0_UE5.7_20260801_baseline`。
+## 权威来源
 
-第一阶段计划：保留当前导出速度，先建立美术友好的输出层、跨资产依赖关系和参数级追踪的基础结构。
+- 插件源码根：[ReadAllandExplains](ReadAllandExplains/)
+- UE 插件版本：[ReadAllandExplains.uplugin](ReadAllandExplains/ReadAllandExplains.uplugin)
+- CodeBuddy Skill 源：[SKILL.md](ReadAllandExplains/skills/readallandexplains/SKILL.md)
+- MCP 源：[readallandexplains_mcp.py](ReadAllandExplains/Integrations/MCP/readallandexplains_mcp.py)
+- 当前能力说明：[README.md](ReadAllandExplains/README.md)
+- 当前版本说明：[RELEASE_NOTES_4.6.0-preview.3.md](ReadAllandExplains/RELEASE_NOTES_4.6.0-preview.3.md)
+- 资产与发布管理规则：[REPOSITORY_MANAGEMENT.md](ReadAllandExplains/docs/REPOSITORY_MANAGEMENT.md)
 
-## 4.0.0 Preview 1
+仓库外的 `.agent/skills/readallandexplains`、UE 项目 `Plugins/ReadAllandExplains`、备份目录和导出的 Context Pack 都是安装、部署、备份或数据副本，不是源码来源，不应反向覆盖仓库。
 
-- Keeps the existing Blueprint, Material and Niagara technical exports.
-- Adds an artist-facing introduction and quick-read section.
-- Adds direct dependencies, referencers and Mermaid relationship graphs.
-- Adds batch `index.md` output with same-name cross-system parameter clues.
-- Adds Static Mesh, Texture, DataTable and CurveTable exporters.
-- Texture export stays metadata-only by default, so no thumbnail or pixel-read slowdown is introduced.
-- Tested by compiling and loading the plugin in Unreal Engine 5.7.4.
+## 日常流程
+
+```powershell
+python -m unittest discover -s ReadAllandExplains/Tests/MCP -p "test_*.py" -v
+powershell -ExecutionPolicy Bypass -File ReadAllandExplains/Scripts/SyncWorkspaceSkill.ps1 -WorkspaceRoot <workspace-root>
+codebuddy plugin validate ReadAllandExplains
+```
+
+提交前确认 `git status --short` 只包含预期源码、测试或文档。`Binaries`、`Intermediate`、`Saved`、缓存、压缩包和本地安装副本均不进入 Git。

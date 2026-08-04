@@ -32,9 +32,11 @@ ReadAllandExplains 是面向 Unreal Engine 技术美术资产的 AI Context Comp
 
 ## Skill、MCP 与 CodeBuddy
 
-- Skill 位于 `skills/readallandexplains/SKILL.md`，负责 UE 资产解释、曲线分析、HLSL 阅读和按需查询流程。
+- Skill 位于 `skills/readallandexplains/SKILL.md`，负责 UE 资产解释、曲线分析、HLSL 阅读和按需查询流程；这是唯一可编辑源，工作区 `.agent/skills` 只是安装副本。
+- 使用 `Scripts/SyncWorkspaceSkill.ps1` 将仓库 Skill 单向同步到指定工作区；同步后重新加载 CodeBuddy 或开启新对话。
 - MCP 位于 `Integrations/MCP/readallandexplains_mcp.py`；读取 Context Pack，并在明确许可后写入受限 SyncLive 请求，但从不修改 `.uasset`。
 - CodeBuddy 原生入口为 `.codebuddy-plugin/plugin.json` 和 `.mcp.json`；本地验证运行 `codebuddy plugin validate .`，测试运行 `codebuddy --plugin-dir .`。
+- 源码、构建产物、部署副本、导出数据和发布流程的完整边界见 `docs/REPOSITORY_MANAGEMENT.md`。
 - CodeBuddy 会通过 `CODEBUDDY_PROJECT_DIR` 自动寻找当前或嵌套 UE 项目的 `Saved/ReadAllandExplainsExports`；仍可用 `READALL_EXPORT_ROOT` 或 `--root` 显式覆盖。
 - 诊断命令：`/readallandexplains:readallandexplains-doctor`。
 - Windows 可通过 `Integrations/MCP/readallandexplains_mcp.bat` 单独启动；通用客户端配置参考 `Integrations/MCP/mcp-config.example.json`。
@@ -57,4 +59,4 @@ ReadAllandExplains 是面向 Unreal Engine 技术美术资产的 AI Context Comp
 
 ## 构建验证
 
-`4.6.0-preview.3` 已通过 Unreal Engine 5.7 / Win64 Development 的 UHT、完整 C++ 编译和 DLL 链接，以及 `25/25` 项 MCP/SyncLive Lite/Skill 契约测试。`4.5.0-preview.1` 已完成 Trans 无界面加载和真实 Niagara Context Pack 导出验证；新包仅包含 Markdown/JSON，SVG/HTML 文件数为 0。
+`4.6.0-preview.3` 的 C++ 产品代码已通过 Unreal Engine 5.7 / Win64 Development 的 UHT、完整编译和 DLL 链接；当前仓库的 MCP、SyncLive Lite、Skill、版本及管理契约测试为 `28/28` 通过。`4.5.0-preview.1` 已完成 Trans 无界面加载和真实 Niagara Context Pack 导出验证；新包仅包含 Markdown/JSON，SVG/HTML 文件数为 0。

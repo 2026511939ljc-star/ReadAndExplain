@@ -1,6 +1,6 @@
 ---
 name: readallandexplains
-description: 分析 ReadAllandExplains 导出的 Unreal Engine AI Context Pack、Markdown 和 Schema JSON。用于解释 UE 材质、Material Custom HLSL、Niagara System/Emitter/Module、Renderer、曲线、参数依赖和与视觉表现相关的蓝图调用；按小任务渐进读取，识别当前快照缺口，生成定向补快照计划，并给出有证据的美术建议。
+description: 分析 ReadAllandExplains 导出的 Unreal Engine AI Context Pack、Markdown 和 Schema JSON。用户要求解释 UE 蓝图、材质、Material Custom HLSL、Niagara System/Emitter/Module、Renderer 绑定、参数依赖、节点图或曲线，或提到 ReadAllandExplains/ReadAndExplain Context Pack 时使用。优先通过配套 MCP 渐进式查询，避免一次加载大型导出文件。
 ---
 
 # ReadAllandExplains

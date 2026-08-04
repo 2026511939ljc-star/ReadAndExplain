@@ -20,6 +20,13 @@
 3. `pending`、`processing`、`complete`、`failed`、`rejected` 分别处理；失败不自动扩大范围或无限重试。
 4. 完成后核对 `state`、`originRequestId`、`basePackId`、根资产和新指纹，再重新读取 coverage 并续答。
 
+## 仓库管理
+
+1. 明确仓库内 Skill 为唯一可编辑源，工作区 `.agent` 与 UE 项目插件目录均为安装或部署副本。
+2. 新增仓库资产、版本、分支、提交和发布管理文档，以及带 SHA256 校验的 Skill 单向同步脚本。
+3. 契约测试新增 UE、CodeBuddy 与 Marketplace 三处产品版本一致性检查，并验证当前发布说明与打包清单。
+4. 构建产物、缓存、Context Pack、备份和本地部署副本继续保留在 Git 之外。
+
 ## 回滚
 
 开发前提交：`facb406754496e4bceb956f0d3412feeaade3964`
@@ -41,9 +48,9 @@ C:/Users/albertinsli/CodeBuddy/FluidFlux_Fork/work/deploy_backups/ReadAllandExpl
 
 ## 验证
 
-- MCP、SyncLive Lite 与 Skill 契约测试 `25/25` 通过。
-- CodeBuddy 插件清单、Skill Frontmatter、Python 语法和版本一致性校验通过。
-- Unreal Engine 5.7 / Win64 Development 完成 UHT、全部 C++ 编译、静态库与 DLL 链接。
+- MCP、SyncLive Lite、Skill、版本及管理契约测试 `28/28` 通过。
+- CodeBuddy 插件清单、Skill Frontmatter、Python 语法、PowerShell 语法和版本一致性校验通过。
+- 产品 C++ 代码已在 Unreal Engine 5.7 / Win64 Development 完成 UHT、全部编译、静态库与 DLL 链接；本轮纯管理改动未重新编译 UE。
 - 本机 UE 5.7 安装中两份旧 HoudiniEngine 源码副本会污染默认 BuildPlugin 规则扫描；使用禁用默认引擎插件的隔离 HostProject 完成了本插件验证，未修改引擎安装。
 
 ```powershell

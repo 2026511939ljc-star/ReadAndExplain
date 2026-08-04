@@ -10,8 +10,13 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-MODULE_PATH = Path(__file__).resolve().parents[2] / "Integrations" / "MCP" / "readallandexplains_mcp.py"
-SKILL_PATH = Path(__file__).resolve().parents[2] / "Skills" / "readallandexplains" / "SKILL.md"
+PLUGIN_ROOT = Path(__file__).resolve().parents[2]
+MODULE_PATH = PLUGIN_ROOT / "Integrations" / "MCP" / "readallandexplains_mcp.py"
+SKILL_PATH = PLUGIN_ROOT / "skills" / "readallandexplains" / "SKILL.md"
+UPLUGIN_PATH = PLUGIN_ROOT / "ReadAllandExplains.uplugin"
+CODEBUDDY_PLUGIN_PATH = PLUGIN_ROOT / ".codebuddy-plugin" / "plugin.json"
+MARKETPLACE_PATH = PLUGIN_ROOT / ".codebuddy-plugin" / "marketplace.json"
+FILTER_PLUGIN_PATH = PLUGIN_ROOT / "Config" / "FilterPlugin.ini"
 SPEC = importlib.util.spec_from_file_location("readallandexplains_mcp", MODULE_PATH)
 assert SPEC and SPEC.loader
 rae = importlib.util.module_from_spec(SPEC)
@@ -303,6 +308,23 @@ class ContractTests(unittest.TestCase):
         skill = SKILL_PATH.read_text(encoding="utf-8-sig")
         for marker in ("拆分任务", "最多 5 个资产", "coverage", "阻塞结论", "补充计划", "明确许可", "本轮已确认", "美术含义与建议"):
             self.assertIn(marker, skill)
+
+    def test_product_versions_and_release_package_are_consistent(self) -> None:
+        uplugin = json.loads(UPLUGIN_PATH.read_text(encoding="utf-8"))
+        codebuddy_plugin = json.loads(CODEBUDDY_PLUGIN_PATH.read_text(encoding="utf-8"))
+        marketplace = json.loads(MARKETPLACE_PATH.read_text(encoding="utf-8"))
+        version = uplugin["VersionName"]
+        self.assertEqual(version, codebuddy_plugin["version"])
+        self.assertEqual(version, marketplace["plugins"][0]["version"])
+        self.assertIn(f"/RELEASE_NOTES_{version}.md", FILTER_PLUGIN_PATH.read_text(encoding="utf-8-sig"))
+        self.assertTrue((PLUGIN_ROOT / f"RELEASE_NOTES_{version}.md").is_file())
+
+    def test_repository_management_assets_exist(self) -> None:
+        self.assertTrue((PLUGIN_ROOT / "docs" / "REPOSITORY_MANAGEMENT.md").is_file())
+        self.assertTrue((PLUGIN_ROOT / "Scripts" / "SyncWorkspaceSkill.ps1").is_file())
+        skill_header = SKILL_PATH.read_text(encoding="utf-8-sig").split("---", 2)[1]
+        self.assertNotIn("allowed-tools:", skill_header)
+        self.assertNotIn("disable:", skill_header)
 
     def test_error_uses_stable_code(self) -> None:
         request = {
