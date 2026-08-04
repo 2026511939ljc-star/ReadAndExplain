@@ -2,14 +2,14 @@
 
 ReadAllandExplains 是面向 Unreal Engine 技术美术资产的 AI Context Compiler。插件把 Blueprint、Material、Niagara 等资产导出为便于人类速读的 Markdown，以及便于 AI 和工具消费的结构化 JSON 元数据。
 
-## 4.6.0-preview.1（开发中）
+## 4.6.0-preview.2（开发中）
 
-1. 现有 5 个 MCP 工具统一返回 `rae.mcp/1.0` Envelope，包含 Pack、Asset、Evidence、分页、警告、缺失字段和稳定错误码。
-2. 工具声明 `outputSchema` 与只读 Tool Annotations，同时返回文本和 `structuredContent`。
-3. Context Pack 使用 `.tmp` 目录生成，Manifest 从 `writing` 切换为 `complete` 后再同目录重命名发布，避免读取半写快照。
-4. Manifest 增加 `packId`、状态、包内相对路径、文件大小与 BLAKE3-160 内容指纹。
-5. 新增无第三方依赖的 Golden Context Pack 契约测试，覆盖协议、Evidence、分页、错误码、Schema、writing 包跳过与路径越界。
-6. 新增 CodeBuddy 原生插件清单、MCP 配置、诊断命令和 UE 工作区自动发现，可通过 `codebuddy --plugin-dir .` 直接测试。
+1. Skill 将大型问题拆成最多 3 个小任务，默认优先材质和 Niagara；下钻预算为最多 5 个资产、直接依赖深度 1。
+2. `get_asset_detail(section="coverage")` 返回当前资产直接依赖的包内覆盖、缺失 `/Game/` 依赖、外部依赖与定向补拍候选，不增加新的 MCP 工具。
+3. 缺口分为“阻塞结论”“提高置信度”“运行时验证”，先完成已有证据可回答的部分，再一次性请求补拍许可。
+4. 文本读取严格使用 UTF-8/UTF-8 BOM；非法编码返回 `TEXT_ENCODING_INVALID`，不再用替换字符掩盖乱码。
+5. 保留 4.6.0-preview.1 的 `rae.mcp/1.0` Envelope、Evidence、稳定错误、分页、原子 Context Pack、Manifest 指纹和 CodeBuddy 原生接入。
+6. Golden Context Pack 契约测试扩展到依赖 coverage、中文往返、非法编码和 Skill 渐进式工作流。
 
 ## 4.5.0-preview.1
 

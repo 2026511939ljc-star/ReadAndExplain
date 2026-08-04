@@ -10,3 +10,4 @@ Saved/
 *.zip
 __pycache__/
 *.py[cod]
+.plugins-cache.json

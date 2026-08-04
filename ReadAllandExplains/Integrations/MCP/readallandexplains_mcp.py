@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any
 
 SERVER_NAME = "readallandexplains"
-SERVER_VERSION = "0.3.0"
+SERVER_VERSION = "0.4.0"
 CONTRACT_VERSION = "rae.mcp/1.0"
 SUPPORTED_PROTOCOL_VERSIONS = ("2024-11-05", "2025-03-26", "2025-06-18", "2025-11-25")
 DEFAULT_PROTOCOL_VERSION = SUPPORTED_PROTOCOL_VERSIONS[-1]
@@ -36,6 +36,19 @@ def load_json(path: Path) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise RaeError("INVALID_JSON", f"Expected a JSON object: {path}", {"path": str(path)})
     return value
+
+
+def load_text(path: Path) -> str:
+    try:
+        return path.read_bytes().decode("utf-8-sig")
+    except FileNotFoundError as exc:
+        raise RaeError("FILE_NOT_FOUND", f"Text file not found: {path}", {"path": str(path)}) from exc
+    except UnicodeDecodeError as exc:
+        raise RaeError(
+            "TEXT_ENCODING_INVALID",
+            f"Text file is not valid UTF-8: {path}",
+            {"path": str(path), "start": exc.start, "end": exc.end},
+        ) from exc
 
 
 def json_text(value: Any) -> str:
@@ -370,6 +383,84 @@ class ContextPackStore:
             "asset_kind": record.get("assetKind", metadata.get("assetKind", "")),
         }
 
+    @staticmethod
+    def _dependency_path(value: Any) -> str:
+        if isinstance(value, dict):
+            for key in ("objectPath", "assetPath", "path", "name"):
+                if value.get(key):
+                    return str(value[key]).strip()
+            return ""
+        return str(value).strip()
+
+    @staticmethod
+    def _asset_path_keys(value: str) -> set[str]:
+        raw = value.strip().replace("\\", "/")
+        if "'" in raw:
+            quoted = [part for part in raw.split("'") if part.startswith("/")]
+            if quoted:
+                raw = quoted[-1]
+        raw = raw.strip("\"'")
+        if not raw:
+            return set()
+        keys = {raw.casefold()}
+        tail = raw.rsplit("/", 1)[-1]
+        if raw.startswith("/"):
+            if "." in tail:
+                keys.add(raw.rsplit(".", 1)[0].casefold())
+        else:
+            keys.add(tail.casefold())
+        return keys
+
+    def dependency_coverage(self, pack: Path, record: dict[str, Any], metadata: dict[str, Any]) -> dict[str, Any]:
+        _, records = self.assets(str(pack))
+        exported_lookup: dict[str, dict[str, Any]] = {}
+        for candidate in records:
+            candidate_metadata = candidate.get("_metadata", {})
+            descriptor = self.asset_descriptor(candidate, candidate_metadata)
+            for value in (descriptor["object_path"], descriptor["name"]):
+                for key in self._asset_path_keys(str(value)):
+                    exported_lookup[key] = descriptor
+
+        raw_dependencies = metadata.get("dependencies", record.get("dependencies", []))
+        dependencies = raw_dependencies if isinstance(raw_dependencies, list) else []
+        exported: list[dict[str, Any]] = []
+        missing_project: list[dict[str, Any]] = []
+        external: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for value in dependencies:
+            dependency = self._dependency_path(value)
+            marker = dependency.casefold()
+            if not dependency or marker in seen:
+                continue
+            seen.add(marker)
+            match = next((exported_lookup[key] for key in self._asset_path_keys(dependency) if key in exported_lookup), None)
+            if match:
+                exported.append({"path": dependency, "asset": match})
+            elif any(key.startswith("/game/") for key in self._asset_path_keys(dependency)):
+                missing_project.append({"path": dependency, "reason": "not_present_in_context_pack"})
+            else:
+                external.append({"path": dependency, "reason": "outside_project_snapshot_scope"})
+
+        return {
+            "metadata_available": bool(metadata),
+            "readable_available": bool(record.get("_readable_path")),
+            "dependency_total": len(exported) + len(missing_project) + len(external),
+            "exported_dependency_count": len(exported),
+            "missing_project_dependency_count": len(missing_project),
+            "external_dependency_count": len(external),
+            "exported_dependencies": exported,
+            "missing_project_dependencies": missing_project,
+            "external_dependencies": external,
+            "suggested_capture": [
+                {
+                    "asset_path": item["path"],
+                    "reason": "Direct /Game/ dependency is not present in the selected Context Pack.",
+                    "priority": "blocking_if_required_by_question",
+                }
+                for item in missing_project
+            ],
+        }
+
     def find_asset(self, asset: str, pack_path: str | None = None) -> tuple[Path, dict[str, Any], dict[str, Any]]:
         pack, records = self.assets(pack_path)
         needle = asset.casefold().strip()
@@ -414,6 +505,7 @@ class ContextPackStore:
 
     def summary(self, asset: str, pack_path: str | None = None) -> dict[str, Any]:
         pack, record, metadata = self.find_asset(asset, pack_path)
+        coverage = self.dependency_coverage(pack, record, metadata)
         graphs = metadata.get("graphs", []) if isinstance(metadata.get("graphs", []), list) else []
         renderers = metadata.get("niagaraRenderers", []) if isinstance(metadata.get("niagaraRenderers", []), list) else []
         curves = metadata.get("niagaraCurves", []) if isinstance(metadata.get("niagaraCurves", []), list) else []
@@ -433,6 +525,13 @@ class ContextPackStore:
             "graphs": graph_summary,
             "renderer_count": len(renderers),
             "curve_count": len(curves),
+            "coverage": {
+                "metadata_available": coverage["metadata_available"],
+                "readable_available": coverage["readable_available"],
+                "exported_dependency_count": coverage["exported_dependency_count"],
+                "missing_project_dependency_count": coverage["missing_project_dependency_count"],
+                "external_dependency_count": coverage["external_dependency_count"],
+            },
         }
         metadata_path = Path(record["_metadata_path"]) if record.get("_metadata_path") else pack / "index.json"
         pointer = "" if record.get("_metadata_path") else "/assets"
@@ -474,6 +573,11 @@ class ContextPackStore:
             pointer = f"/{normalized}"
             if normalized not in metadata and normalized not in record:
                 missing_fields.append(normalized)
+        elif normalized == "coverage":
+            data = self.dependency_coverage(pack, record, metadata)
+            pointer = "/dependencies" if "dependencies" in metadata else "/assets"
+            if data["missing_project_dependency_count"]:
+                missing_fields.append("dependency_assets")
         elif normalized == "graphs":
             values = [
                 {"id": value.get("id"), "name": value.get("name"), "kind": value.get("kind"), "node_count": len(value.get("nodes", [])), "link_count": len(value.get("links", []))}
@@ -522,7 +626,7 @@ class ContextPackStore:
             if not readable_path:
                 raise RaeError("READABLE_NOT_FOUND", f"Readable document not found for {asset}", {"asset": asset})
             path = Path(readable_path)
-            text = path.read_text(encoding="utf-8-sig", errors="replace")
+            text = load_text(path)
             start = max(0, offset)
             size = max(1, min(limit, MAX_OUTPUT_CHARS // 2))
             data = {"text": text[start : start + size]}
@@ -556,7 +660,7 @@ class ContextPackStore:
                     continue
                 path = Path(str(raw_path))
                 try:
-                    lines = path.read_text(encoding="utf-8-sig", errors="replace").splitlines()
+                    lines = load_text(path).splitlines()
                 except OSError:
                     continue
                 for line_number, line in enumerate(lines, 1):
@@ -611,7 +715,7 @@ TOOLS = [
         "Read one precise asset section. List and text sections support offset/limit pagination.",
         {
             "asset": {"type": "string"},
-            "section": {"type": "string", "enum": ["summary", "parameters", "dependencies", "referencers", "graphs", "graph", "renderers", "curves", "metadata", "readable"]},
+            "section": {"type": "string", "enum": ["summary", "parameters", "coverage", "dependencies", "referencers", "graphs", "graph", "renderers", "curves", "metadata", "readable"]},
             "item_id": {"type": "string"},
             "pack_path": PACK_ARG,
             "offset": OFFSET_ARG,
@@ -713,7 +817,7 @@ def handle_request(store: ContextPackStore, request: dict[str, Any]) -> dict[str
                 "protocolVersion": requested,
                 "capabilities": {"tools": {"listChanged": False}},
                 "serverInfo": {"name": SERVER_NAME, "version": SERVER_VERSION},
-                "instructions": "Use search_assets, then get_asset_summary, then request only the required detail. Cite evidence and inspect missing_fields before drawing conclusions.",
+                "instructions": "Split broad requests into small asset questions. Use search_assets, get_asset_summary, then coverage before cross-asset drill-down. Cite evidence, inspect missing_fields, and request permission before any targeted re-snapshot.",
             },
         )
     if method == "ping":

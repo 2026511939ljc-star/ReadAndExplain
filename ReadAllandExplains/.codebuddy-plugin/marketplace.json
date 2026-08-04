@@ -8,8 +8,8 @@
     {
       "name": "readallandexplains",
       "source": ".",
-      "description": "Progressive, evidence-aware analysis of Unreal Engine Context Packs.",
-      "version": "4.6.0-preview.1",
+      "description": "Progressive, evidence-aware Unreal Engine analysis with targeted dependency coverage.",
+      "version": "4.6.0-preview.2",
       "category": "game-development",
       "repository": "https://github.com/2026511939ljc-star/ReadAndExplain"
     }

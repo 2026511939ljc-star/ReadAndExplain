@@ -1,8 +1,8 @@
 {
   "name": "readallandexplains",
-  "version": "4.6.0-preview.1",
-  "description": "ReadAllandExplains for CodeBuddy: progressively inspect Unreal Engine Blueprint, Material and Niagara Context Packs through a read-only MCP server and evidence-aware Skill.",
-  "description_en": "Read-only Unreal Engine technical-art Context Pack analysis for CodeBuddy with progressive MCP retrieval and evidence-aware guidance.",
+  "version": "4.6.0-preview.2",
+  "description": "ReadAllandExplains for CodeBuddy: split Unreal Engine asset questions into progressive, evidence-backed analysis with targeted dependency coverage.",
+  "description_en": "Progressive Unreal Engine technical-art Context Pack analysis with dependency coverage, strict UTF-8, and evidence-aware guidance.",
   "author": {
     "name": "Aoife"
   },

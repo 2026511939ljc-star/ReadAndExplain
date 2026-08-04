@@ -10,6 +10,7 @@ from pathlib import Path
 from unittest import mock
 
 MODULE_PATH = Path(__file__).resolve().parents[2] / "Integrations" / "MCP" / "readallandexplains_mcp.py"
+SKILL_PATH = Path(__file__).resolve().parents[2] / "Skills" / "readallandexplains" / "SKILL.md"
 SPEC = importlib.util.spec_from_file_location("readallandexplains_mcp", MODULE_PATH)
 assert SPEC and SPEC.loader
 rae = importlib.util.module_from_spec(SPEC)
@@ -42,7 +43,7 @@ class ContractTests(unittest.TestCase):
             "state": state,
             "createdUtc": "2026-08-04T00:00:00Z",
             "dependencyDepth": 2,
-            "exportedAssetCount": 1,
+            "exportedAssetCount": 2,
             "rootAssets": [object_path],
         }
         self._dump(pack / "context-pack.json", manifest)
@@ -56,9 +57,22 @@ class ContractTests(unittest.TestCase):
                         "classPath": "/Script/Niagara.NiagaraSystem",
                         "assetKind": "Niagara",
                         "exportFile": "Niagara/NS_Test_ReadableNiagara.md",
-                        "dependencies": ["/Game/Test/M_Test.M_Test"],
+                        "dependencies": [
+                            "/Game/Test/M_Test.M_Test",
+                            "/Game/Test/M_Missing.M_Missing",
+                            "/Engine/Functions/EngineOnly.EngineOnly",
+                        ],
                         "referencers": [],
-                    }
+                    },
+                    {
+                        "name": "M_Test",
+                        "objectPath": "/Game/Test/M_Test.M_Test",
+                        "classPath": "/Script/Engine.Material",
+                        "assetKind": "Material",
+                        "exportFile": "Materials/M_Test_ReadableMaterial.md",
+                        "dependencies": [],
+                        "referencers": [object_path],
+                    },
                 ]
             },
         )
@@ -69,8 +83,12 @@ class ContractTests(unittest.TestCase):
                 "objectPath": object_path,
                 "classPath": "/Script/Niagara.NiagaraSystem",
                 "assetKind": "Niagara",
-                "parameters": [{"name": "User.Intensity", "value": "1.0"}],
-                "dependencies": ["/Game/Test/M_Test.M_Test"],
+                "parameters": [{"name": "User.Intensity", "value": "1.0"}, {"name": "泡沫强度", "value": "0.75"}],
+                "dependencies": [
+                    "/Game/Test/M_Test.M_Test",
+                    "/Game/Test/M_Missing.M_Missing",
+                    "/Engine/Functions/EngineOnly.EngineOnly",
+                ],
                 "referencers": [],
                 "graphs": [
                     {"id": "graph-1", "name": "Spawn", "kind": "NiagaraGraph", "nodes": [{"id": "node-1"}], "links": []},
@@ -94,7 +112,23 @@ class ContractTests(unittest.TestCase):
         )
         readable = pack / "Niagara" / "NS_Test_ReadableNiagara.md"
         readable.parent.mkdir(parents=True, exist_ok=True)
-        readable.write_text("# NS_Test\n\nCustom HLSL marker\n", encoding="utf-8")
+        readable.write_text("# NS_Test\n\nCustom HLSL marker\n泡沫强度控制瀑布浪花。\n", encoding="utf-8-sig")
+        self._dump(
+            pack / "Materials" / "M_Test.meta.json",
+            {
+                "assetName": "M_Test",
+                "objectPath": "/Game/Test/M_Test.M_Test",
+                "classPath": "/Script/Engine.Material",
+                "assetKind": "Material",
+                "parameters": [],
+                "dependencies": [],
+                "referencers": [object_path],
+                "graphs": [],
+            },
+        )
+        material_readable = pack / "Materials" / "M_Test_ReadableMaterial.md"
+        material_readable.parent.mkdir(parents=True, exist_ok=True)
+        material_readable.write_text("# M_Test\n", encoding="utf-8")
 
     def test_all_tools_publish_read_only_contract(self) -> None:
         self.assertEqual(5, len(rae.TOOLS))
@@ -128,6 +162,45 @@ class ContractTests(unittest.TestCase):
         self.assertEqual(3, result["page"]["total"])
         self.assertTrue(result["page"]["truncated"])
         self.assertEqual("2", result["page"]["next_cursor"])
+
+    def test_coverage_lists_targeted_missing_project_dependencies(self) -> None:
+        result = rae.call_tool(
+            self.store,
+            "get_asset_detail",
+            {"asset": "NS_Test", "section": "coverage"},
+        )
+        coverage = result["data"]
+        self.assertEqual(1, coverage["exported_dependency_count"])
+        self.assertEqual(1, coverage["missing_project_dependency_count"])
+        self.assertEqual(1, coverage["external_dependency_count"])
+        self.assertEqual("/Game/Test/M_Test.M_Test", coverage["exported_dependencies"][0]["path"])
+        self.assertEqual("/Game/Test/M_Missing.M_Missing", coverage["suggested_capture"][0]["asset_path"])
+        self.assertEqual(["dependency_assets"], result["missing_fields"])
+        self.assertEqual("/dependencies", result["evidence"][0]["json_pointer"])
+
+    def test_utf8_chinese_round_trip_has_no_replacement_characters(self) -> None:
+        detail = rae.call_tool(
+            self.store,
+            "get_asset_detail",
+            {"asset": "NS_Test", "section": "readable", "offset": 0, "limit": 1000},
+        )
+        self.assertIn("泡沫强度控制瀑布浪花", detail["data"]["text"])
+        self.assertNotIn("�", detail["data"]["text"])
+        search = rae.call_tool(self.store, "search_export_text", {"query": "瀑布浪花", "asset": "NS_Test"})
+        self.assertEqual(1, search["page"]["total"])
+        self.assertIn("泡沫强度", search["data"]["hits"][0]["snippet"])
+
+    def test_invalid_readable_encoding_is_reported_instead_of_replaced(self) -> None:
+        readable = self.complete / "Niagara" / "NS_Test_ReadableNiagara.md"
+        readable.write_bytes(b"# NS_Test\n\xff\xfe")
+        with self.assertRaises(rae.RaeError) as raised:
+            self.store.detail("NS_Test", "readable", None, None, 0, 100)
+        self.assertEqual("TEXT_ENCODING_INVALID", raised.exception.code)
+
+    def test_skill_requires_progressive_budgeted_missing_dependency_flow(self) -> None:
+        skill = SKILL_PATH.read_text(encoding="utf-8-sig")
+        for marker in ("拆分任务", "最多 5 个资产", "coverage", "阻塞结论", "补充计划", "明确许可", "本轮已确认", "美术含义与建议"):
+            self.assertIn(marker, skill)
 
     def test_error_uses_stable_code(self) -> None:
         request = {
