@@ -2,6 +2,14 @@
 
 ReadAllandExplains 是面向 Unreal Engine 技术美术资产的 AI Context Compiler。插件把 Blueprint、Material、Niagara 等资产导出为便于人类速读的 Markdown，以及便于 AI 和工具消费的结构化 JSON 元数据。
 
+## 4.6.0-preview.1（开发中）
+
+1. 现有 5 个 MCP 工具统一返回 `rae.mcp/1.0` Envelope，包含 Pack、Asset、Evidence、分页、警告、缺失字段和稳定错误码。
+2. 工具声明 `outputSchema` 与只读 Tool Annotations，同时返回文本和 `structuredContent`。
+3. Context Pack 使用 `.tmp` 目录生成，Manifest 从 `writing` 切换为 `complete` 后再同目录重命名发布，避免读取半写快照。
+4. Manifest 增加 `packId`、状态、包内相对路径、文件大小与 BLAKE3-160 内容指纹。
+5. 新增无第三方依赖的 Golden Context Pack 契约测试，覆盖协议、Evidence、分页、错误码、Schema、writing 包跳过与路径越界。
+
 ## 4.5.0-preview.1
 
 1. 新增 AI Context Pack：以所选资产为根，递归收集 `/Game/` 下受支持的项目依赖并输出独立上下文目录。
@@ -28,6 +36,7 @@ ReadAllandExplains 是面向 Unreal Engine 技术美术资产的 AI Context Comp
 - Windows 可通过 `Integrations/MCP/readallandexplains_mcp.bat` 启动；客户端配置参考 `Integrations/MCP/mcp-config.example.json`。
 - 可设置环境变量 `READALL_EXPORT_ROOT`，或启动时传入 `--root <ReadAllandExplainsExports>`。
 - MCP 工具：`list_context_packs`、`search_assets`、`get_asset_summary`、`get_asset_detail`、`search_export_text`。
+- 运行契约测试：`python -m unittest discover -s Tests/MCP -p "test_*.py" -v`。
 
 ## 输出
 

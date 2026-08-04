@@ -27,6 +27,9 @@ description: 分析 ReadAllandExplains 导出的 Unreal Engine AI Context Pack�
 
 ## 分析规则
 
+- 每次工具返回后先检查统一 Envelope：`error` 非空时不得继续把结果当事实；`warnings` 和 `missing_fields` 必须进入最终不确定项；`page.truncated=true` 时根据 `next_cursor` 继续读取，不能把当前页当成完整数据。
+- 所有重要结论都要能回指 `evidence` 中的 `source_file`、`json_pointer`、`asset_path`、`item_id` 或行号。证据只证明导出快照中存在该事实，不自动证明运行时 GPU 行为。
+- `pack.pack_id`、`schema_version`、`state` 和 `fingerprint` 用于确认数据属于同一完整快照；不要混用不同 Pack 的结果。
 - Markdown 用于速读与语义解释，`.meta.json` 用于核对准确的节点、Pin、Link、Renderer 和曲线 Key。
 - 同名参数不等于已连接。只有 Pin/Link、绑定、调用关系或明确依赖能证明连接。
 - `UnknownExpr` 表示节点存在但语义未完全翻译，不得说成节点丢失。

@@ -1,9 +1,9 @@
 {
 	"FileVersion": 3,
-	"Version": 9,
-	"VersionName": "4.5.0-preview.1",
+	"Version": 10,
+	"VersionName": "4.6.0-preview.1",
 	"FriendlyName": "ReadAllandExplains",
-	"Description": "UE asset AI Context Compiler with recursive project Context Packs, deduplicated Niagara curves, and Skill/MCP progressive reading.",
+	"Description": "UE asset AI Context Compiler with atomic Context Packs, evidence-backed MCP envelopes, stable errors, and contract tests.",
 	"Category": "Editor",
 	"CreatedBy": "Aoife",
 	"CreatedByURL": "",

@@ -35,7 +35,9 @@
 #include "Misc/Paths.h"
 #include "HAL/PlatformProcess.h"
 #include "HAL/PlatformFileManager.h"
+#include "HAL/FileManager.h"
 #include "HAL/IConsoleManager.h"
+#include "IO/IoHash.h"
 #include "UObject/SoftObjectPath.h"
 // 引用查看器（Reference Viewer）集成所需
 #include "GraphEditor.h"
@@ -273,9 +275,20 @@ static FBatchExportResult ExportAssetDataList(const TArray<FAssetData>& AssetLis
 	if (R.ExportedAssets.Num() > 0)
 	{
 		const FString IndexDir = ExportRootOverride.IsEmpty() ? GetExportRootDir() : ExportRootOverride;
-		const FString IndexText = FAssetInsightExporter::BuildBatchIndex(R.ExportedAssets, R.SavedPaths);
+		TArray<FString> IndexSavedPaths = R.SavedPaths;
+		if (!ExportRootOverride.IsEmpty())
+		{
+			const FString RelativeBase = FPaths::ConvertRelativePathToFull(ExportRootOverride) + TEXT("/");
+			for (FString& SavedPath : IndexSavedPaths)
+			{
+				SavedPath = FPaths::ConvertRelativePathToFull(SavedPath);
+				FPaths::MakePathRelativeTo(SavedPath, *RelativeBase);
+				SavedPath.ReplaceInline(TEXT("\\"), TEXT("/"));
+			}
+		}
+		const FString IndexText = FAssetInsightExporter::BuildBatchIndex(R.ExportedAssets, IndexSavedPaths);
 		SaveText(IndexText, IndexDir, TEXT("index"), TEXT(".md"));
-		const FString IndexJson = FAssetInsightExporter::BuildBatchIndexJson(R.ExportedAssets, R.SavedPaths);
+		const FString IndexJson = FAssetInsightExporter::BuildBatchIndexJson(R.ExportedAssets, IndexSavedPaths);
 		SaveText(IndexJson, IndexDir, TEXT("index"), TEXT(".json"));
 	}
 	return R;
@@ -332,18 +345,58 @@ static TArray<FAssetData> CollectContextPackAssets(const TArray<FAssetData>& Roo
 }
 
 static FString BuildContextPackManifest(
+	const FString& PackId,
+	const FString& PackDir,
+	const FString& State,
 	const TArray<FAssetData>& Roots,
 	const FBatchExportResult& Result,
 	const int32 DependencyDepth)
 {
+	TArray<FString> PackFiles;
+	if (State == TEXT("complete"))
+	{
+		IFileManager::Get().FindFilesRecursive(PackFiles, *PackDir, TEXT("*"), true, false, true);
+		PackFiles.RemoveAll([](const FString& Path)
+		{
+			return FPaths::GetCleanFilename(Path).Equals(TEXT("context-pack.json"), ESearchCase::IgnoreCase);
+		});
+		PackFiles.Sort();
+	}
+
+	TArray<TSharedPtr<FJsonValue>> FileValues;
+	FString FingerprintSource;
+	const FString RelativeBase = FPaths::ConvertRelativePathToFull(PackDir) + TEXT("/");
+	for (const FString& FilePath : PackFiles)
+	{
+		TArray<uint8> Bytes;
+		if (!FFileHelper::LoadFileToArray(Bytes, *FilePath)) continue;
+		FString RelativePath = FPaths::ConvertRelativePathToFull(FilePath);
+		FPaths::MakePathRelativeTo(RelativePath, *RelativeBase);
+		RelativePath.ReplaceInline(TEXT("\\"), TEXT("/"));
+		const FString Fingerprint = LexToString(FIoHash::HashBuffer(Bytes.GetData(), Bytes.Num()));
+
+		TSharedRef<FJsonObject> File = MakeShared<FJsonObject>();
+		File->SetStringField(TEXT("path"), RelativePath);
+		File->SetNumberField(TEXT("size"), Bytes.Num());
+		File->SetStringField(TEXT("fingerprint"), TEXT("blake3-160:") + Fingerprint);
+		FileValues.Add(MakeShared<FJsonValueObject>(File));
+		FingerprintSource += RelativePath + TEXT(":") + FString::FromInt(Bytes.Num()) + TEXT(":") + Fingerprint + TEXT("\n");
+	}
+	const FTCHARToUTF8 FingerprintUtf8(*FingerprintSource);
+	const FString PackFingerprint = LexToString(FIoHash::HashBuffer(FingerprintUtf8.Get(), FingerprintUtf8.Length()));
+
 	TSharedRef<FJsonObject> Root = MakeShared<FJsonObject>();
 	Root->SetNumberField(TEXT("schemaVersion"), 1);
 	Root->SetStringField(TEXT("documentType"), TEXT("ReadAllandExplainsContextPack"));
+	Root->SetStringField(TEXT("packId"), PackId);
+	Root->SetStringField(TEXT("state"), State);
 	Root->SetStringField(TEXT("createdUtc"), FDateTime::UtcNow().ToIso8601());
+	Root->SetStringField(TEXT("fingerprint"), TEXT("blake3-160:") + PackFingerprint);
 	Root->SetNumberField(TEXT("dependencyDepth"), DependencyDepth);
 	Root->SetNumberField(TEXT("exportedAssetCount"), Result.ExportedAssets.Num());
 	Root->SetNumberField(TEXT("failedCount"), Result.FailedCount);
 	Root->SetNumberField(TEXT("skippedCount"), Result.SkippedCount);
+	Root->SetArrayField(TEXT("files"), FileValues);
 
 	TArray<TSharedPtr<FJsonValue>> RootValues;
 	for (const FAssetData& RootAsset : Roots)
@@ -358,7 +411,14 @@ static FString BuildContextPackManifest(
 		TSharedRef<FJsonObject> Asset = MakeShared<FJsonObject>();
 		Asset->SetStringField(TEXT("objectPath"), Result.ExportedAssets[Index].GetObjectPathString());
 		Asset->SetStringField(TEXT("packageName"), Result.ExportedAssets[Index].PackageName.ToString());
-		Asset->SetStringField(TEXT("exportFile"), Result.SavedPaths.IsValidIndex(Index) ? Result.SavedPaths[Index] : FString());
+		FString ExportFile = Result.SavedPaths.IsValidIndex(Index) ? Result.SavedPaths[Index] : FString();
+		if (!ExportFile.IsEmpty())
+		{
+			ExportFile = FPaths::ConvertRelativePathToFull(ExportFile);
+			FPaths::MakePathRelativeTo(ExportFile, *RelativeBase);
+			ExportFile.ReplaceInline(TEXT("\\"), TEXT("/"));
+		}
+		Asset->SetStringField(TEXT("exportFile"), ExportFile);
 		AssetValues.Add(MakeShared<FJsonValueObject>(Asset));
 	}
 	Root->SetArrayField(TEXT("assets"), AssetValues);
@@ -374,11 +434,23 @@ static FBatchExportResult ExportContextPack(const TArray<FAssetData>& Roots, FSt
 	const UReadAllandExplainsSettings* Settings = GetDefault<UReadAllandExplainsSettings>();
 	const int32 DependencyDepth = FMath::Clamp(Settings ? Settings->ContextPackDependencyDepth : 2, 0, 4);
 	const FString Timestamp = FDateTime::Now().ToString(TEXT("%Y%m%d_%H%M%S"));
-	OutPackDir = GetExportRootDir() / TEXT("ContextPacks") / (TEXT("ContextPack_") + Timestamp);
+	const FString PackId = TEXT("ContextPack_") + Timestamp;
+	const FString PacksRoot = GetExportRootDir() / TEXT("ContextPacks");
+	const FString FinalPackDir = PacksRoot / PackId;
+	const FString TemporaryPackDir = PacksRoot / (PackId + TEXT(".tmp"));
+	IPlatformFile& PlatformFile = FPlatformFileManager::Get().GetPlatformFile();
+	EnsureDir(PacksRoot);
+	if (PlatformFile.DirectoryExists(*TemporaryPackDir))
+	{
+		PlatformFile.DeleteDirectoryRecursively(*TemporaryPackDir);
+	}
+	EnsureDir(TemporaryPackDir);
+	OutPackDir = TemporaryPackDir;
 
+	FBatchExportResult Result;
+	SaveText(BuildContextPackManifest(PackId, TemporaryPackDir, TEXT("writing"), Roots, Result, DependencyDepth), TemporaryPackDir, TEXT("context-pack"), TEXT(".json"));
 	const TArray<FAssetData> Assets = CollectContextPackAssets(Roots, DependencyDepth);
-	FBatchExportResult Result = ExportAssetDataList(Assets, OutPackDir);
-	SaveText(BuildContextPackManifest(Roots, Result, DependencyDepth), OutPackDir, TEXT("context-pack"), TEXT(".json"));
+	Result = ExportAssetDataList(Assets, TemporaryPackDir);
 
 	FString Readme;
 	Readme += TEXT("# ReadAllandExplains Context Pack\n\n");
@@ -386,7 +458,20 @@ static FBatchExportResult ExportContextPack(const TArray<FAssetData>& Roots, FSt
 		Roots.Num(), DependencyDepth, Result.SuccessCount, Result.FailedCount, Result.SkippedCount);
 	Readme += TEXT("## 使用方式\n\n优先把本目录的 `context-pack.json`、`index.json` 和根资产文档交给 AI；需要分析具体节点、Renderer 或曲线时，再按需读取对应 `.meta.json`。推荐使用配套 ReadAllandExplains Skill 与 MCP，先读摘要、再读取目标片段，避免一次加载完整大文件。\n\n");
 	Readme += TEXT("```text\n请把这个 ReadAllandExplains Context Pack 作为一个整体分析。先解释根资产的视觉目标与执行流程，再沿 index 中的真实依赖检查自定义模块、材质、Renderer 绑定与曲线。不要把同名参数直接当作已连接。\n```\n");
-	SaveText(Readme, OutPackDir, TEXT("README"), TEXT(".md"));
+	SaveText(Readme, TemporaryPackDir, TEXT("README"), TEXT(".md"));
+	SaveText(BuildContextPackManifest(PackId, TemporaryPackDir, TEXT("complete"), Roots, Result, DependencyDepth), TemporaryPackDir, TEXT("context-pack"), TEXT(".json"));
+
+	if (PlatformFile.DirectoryExists(*FinalPackDir))
+	{
+		PlatformFile.DeleteDirectoryRecursively(*FinalPackDir);
+	}
+	if (!PlatformFile.MoveFile(*FinalPackDir, *TemporaryPackDir))
+	{
+		UE_LOG(LogTemp, Error, TEXT("ReadAllandExplains could not publish Context Pack atomically: %s -> %s"), *TemporaryPackDir, *FinalPackDir);
+		++Result.FailedCount;
+		return Result;
+	}
+	OutPackDir = FinalPackDir;
 	return Result;
 }
 
