@@ -12,7 +12,7 @@ FText UReadAllandExplainsSettings::GetSectionText() const
 
 FText UReadAllandExplainsSettings::GetSectionDescription() const
 {
-	return LOCTEXT("SectionDescription", "将 UE 资产导出为适合 AI 阅读的 Markdown 与结构化元数据；推荐使用 Compact 精简模式。");
+	return LOCTEXT("SectionDescription", "将 UE 资产导出为适合 AI 阅读的 Markdown 与结构化元数据；SyncLive Lite 只处理用户明确授权的受限定向补快照请求。");
 }
 #endif
 

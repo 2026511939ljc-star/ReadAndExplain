@@ -2,14 +2,14 @@
 
 ReadAllandExplains 是面向 Unreal Engine 技术美术资产的 AI Context Compiler。插件把 Blueprint、Material、Niagara 等资产导出为便于人类速读的 Markdown，以及便于 AI 和工具消费的结构化 JSON 元数据。
 
-## 4.6.0-preview.2（开发中）
+## 4.6.0-preview.3（开发中）
 
-1. Skill 将大型问题拆成最多 3 个小任务，默认优先材质和 Niagara；下钻预算为最多 5 个资产、直接依赖深度 1。
-2. `get_asset_detail(section="coverage")` 返回当前资产直接依赖的包内覆盖、缺失 `/Game/` 依赖、外部依赖与定向补拍候选，不增加新的 MCP 工具。
-3. 缺口分为“阻塞结论”“提高置信度”“运行时验证”，先完成已有证据可回答的部分，再一次性请求补拍许可。
-4. 文本读取严格使用 UTF-8/UTF-8 BOM；非法编码返回 `TEXT_ENCODING_INVALID`，不再用替换字符掩盖乱码。
-5. 保留 4.6.0-preview.1 的 `rae.mcp/1.0` Envelope、Evidence、稳定错误、分页、原子 Context Pack、Manifest 指纹和 CodeBuddy 原生接入。
-6. Golden Context Pack 契约测试扩展到依赖 coverage、中文往返、非法编码和 Skill 渐进式工作流。
+1. 保留 preview.2 的大任务拆分、材质/Niagara 优先、coverage、严格 UTF-8 和证据式渐进读取。
+2. 新增 SyncLive Lite：用户批准具体补充计划后，MCP 可向正在运行的 UE 编辑器提交 1 至 5 个 `/Game/` 资产的定向静态补快照请求。
+3. 请求强制绑定完整基线 Pack 指纹，依赖深度仅允许 0 或 1；UE 消费端会独立复验许可、范围、资产类型和指纹。
+4. 请求采用 `pending → processing → complete/failed/rejected` 状态机，文件原子落盘，编辑器中断后可审计恢复。
+5. 新 Pack 记录 `originRequestId` 与 `basePackId`；Skill 核验后从被阻塞的小任务继续，不要求用户重复问题。
+6. SyncLive Lite 不执行任意命令，不修改资产、不保存关卡、不控制或观测运行时。
 
 ## 4.5.0-preview.1
 
@@ -33,12 +33,12 @@ ReadAllandExplains 是面向 Unreal Engine 技术美术资产的 AI Context Comp
 ## Skill、MCP 与 CodeBuddy
 
 - Skill 位于 `skills/readallandexplains/SKILL.md`，负责 UE 资产解释、曲线分析、HLSL 阅读和按需查询流程。
-- MCP 位于 `Integrations/MCP/readallandexplains_mcp.py`，只读访问导出缓存，不直接修改 `.uasset`。
+- MCP 位于 `Integrations/MCP/readallandexplains_mcp.py`；读取 Context Pack，并在明确许可后写入受限 SyncLive 请求，但从不修改 `.uasset`。
 - CodeBuddy 原生入口为 `.codebuddy-plugin/plugin.json` 和 `.mcp.json`；本地验证运行 `codebuddy plugin validate .`，测试运行 `codebuddy --plugin-dir .`。
 - CodeBuddy 会通过 `CODEBUDDY_PROJECT_DIR` 自动寻找当前或嵌套 UE 项目的 `Saved/ReadAllandExplainsExports`；仍可用 `READALL_EXPORT_ROOT` 或 `--root` 显式覆盖。
 - 诊断命令：`/readallandexplains:readallandexplains-doctor`。
 - Windows 可通过 `Integrations/MCP/readallandexplains_mcp.bat` 单独启动；通用客户端配置参考 `Integrations/MCP/mcp-config.example.json`。
-- MCP 工具：`list_context_packs`、`search_assets`、`get_asset_summary`、`get_asset_detail`、`search_export_text`。
+- MCP 工具：5 个读取工具，以及授权后使用的 `request_targeted_snapshot`、`get_snapshot_request_status`。
 - 运行契约测试：`python -m unittest discover -s Tests/MCP -p "test_*.py" -v`。
 
 ## 输出
@@ -52,9 +52,9 @@ ReadAllandExplains 是面向 Unreal Engine 技术美术资产的 AI Context Comp
 ## 当前边界
 
 - Context Pack 只递归 `/Game/` 下插件可导出的项目资产；引擎内容和不支持的资产类型保留在依赖清单中但不单独导出。
-- 当前 MCP 查询导出缓存，不实时连接 UE；刷新资产后需要重新导出 Context Pack。
-- 完整参数级 DAG、Live Sync、反向导入和正式 Marketplace 发布包尚未完成。
+- SyncLive Lite 需要 UE 编辑器正在运行且插件已加载；PIE 期间暂停处理。它只生成静态补充 Pack，不是实时运行时桥接。
+- 完整参数级 DAG、运行时观测、反向导入和正式 Marketplace 发布包尚未完成。
 
 ## 构建验证
 
-`4.5.0-preview.1` 已通过 Unreal Engine 5.7 / Win64 Development 完整 C++ 编译、DLL 链接、Trans 无界面加载和真实 Niagara Context Pack 导出验证；新包仅包含 Markdown/JSON，SVG/HTML 文件数为 0。
+`4.6.0-preview.3` 已通过 Unreal Engine 5.7 / Win64 Development 的 UHT、完整 C++ 编译和 DLL 链接，以及 `25/25` 项 MCP/SyncLive Lite/Skill 契约测试。`4.5.0-preview.1` 已完成 Trans 无界面加载和真实 Niagara Context Pack 导出验证；新包仅包含 Markdown/JSON，SVG/HTML 文件数为 0。

@@ -51,6 +51,14 @@ public:
 	UPROPERTY(EditAnywhere, Config, Category = "Context Pack", meta = (DisplayName = "项目依赖递归层级", ClampMin = "0", ClampMax = "4", UIMin = "0", UIMax = "4"))
 	int32 ContextPackDependencyDepth = 2;
 
+	/** Process explicitly authorized targeted capture requests written under Saved/ReadAllandExplainsExports/SyncLive. */
+	UPROPERTY(EditAnywhere, Config, Category = "SyncLive Lite", meta = (DisplayName = "启用授权后的定向补快照"))
+	bool bEnableSyncLiveLite = true;
+
+	/** Polling is editor-only and processes at most one authorized request per tick. */
+	UPROPERTY(EditAnywhere, Config, Category = "SyncLive Lite", meta = (DisplayName = "请求轮询间隔（秒）", ClampMin = "0.5", ClampMax = "10.0", UIMin = "0.5", UIMax = "10.0"))
+	float SyncLivePollIntervalSeconds = 1.0f;
+
 	/** Controls the AI hand-off text appended to each exported document. */
 	UPROPERTY(EditAnywhere, Config, Category = "AI", meta = (DisplayName = "AI 提示词模式"))
 	EReadAllPromptMode PromptMode = EReadAllPromptMode::Explain;

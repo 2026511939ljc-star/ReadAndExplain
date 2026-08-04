@@ -76,9 +76,17 @@ description: 分析 ReadAllandExplains 导出的 Unreal Engine AI Context Pack�
 
 同时说明本轮预计补充资产数、依赖深度、只读范围和当前 Pack 指纹。默认建议不超过 5 个资产、深度 1。
 
-在用户明确许可前，不触发 SyncLive、后台导出或任何 UE 操作。当前环境没有定向同步能力时，明确请用户在 UE 生成对应增量快照，不得声称已经在后台执行。
+在用户明确许可前，不调用 `request_targeted_snapshot`，不写入请求文件，也不触发任何 UE 操作。许可必须发生在本轮列出具体资产、数量、深度、用途和当前 Pack 指纹之后；笼统的历史许可不能用于未展示的新范围。
 
-用户许可后，批量处理已列出的范围。新快照必须满足 `state=complete`，随后重新查询根资产和 coverage，核对根资产、时间与指纹，再从中断的小任务继续，不要求用户重复原问题。用户拒绝时，只给已确认内容和受影响结论。
+用户许可后：
+
+1. 再调用 `list_context_packs` 或当前读取结果，确认基线 Pack 仍为 `complete` 且指纹未变化。
+2. 调用 `request_targeted_snapshot`，只提交已获许可的 1 至 5 个 `/Game/` 资产；默认 `dependency_depth=0`，只有计划明确包含直接依赖时才使用 `1`。必须传 `permission_granted=true`、基线 `pack_path` 和完全一致的 `base_pack_fingerprint`。
+3. 保存返回的 `request_id`，调用 `get_snapshot_request_status` 查询状态。`pending` 表示 UE 尚未消费；`processing` 表示正在导出；`complete` 才能继续分析；`failed` 或 `rejected` 必须向用户说明错误码，不自动扩大范围或无限重试。
+4. 状态长期停在 `pending` 时，说明 UE 编辑器可能未运行、插件未加载、处于 PIE，或 SyncLive Lite 已关闭；不得声称后台正在执行。
+5. 完成后检查返回 Pack 的 `state=complete`、`originRequestId`、`basePackId`、根资产、时间和新指纹；重新读取目标资产及 coverage，再从中断的小任务续答，不要求用户重复原问题。
+
+请求只生成静态 Context Pack，不执行控制台命令、不修改 UE 资产、不保存关卡，也不观测运行时 GPU。用户拒绝时，只给已确认内容和受影响结论。
 
 ## 资产分析规则
 

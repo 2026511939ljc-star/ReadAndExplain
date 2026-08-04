@@ -1,6 +1,6 @@
 # ReadAllandExplains for CodeBuddy
 
-本仓库同时是 Unreal Engine 插件与 CodeBuddy 插件。CodeBuddy 插件包含只读 MCP、渐进式分析 Skill 和诊断命令，不会修改 `.uasset`。
+本仓库同时是 Unreal Engine 插件与 CodeBuddy 插件。CodeBuddy 插件包含渐进式分析 MCP、Skill 和诊断命令；MCP 读取 Context Pack，并且只在用户明确批准具体补充范围后写入受限 SyncLive 请求，始终不会修改 `.uasset`。
 
 ## 本地测试
 
@@ -23,7 +23,10 @@ codebuddy --plugin-dir .
 ```text
 列出最新 ReadAllandExplains Context Pack 里的资产。
 解释 NS_Foo 的 Graph、Renderer 和关键曲线，并给出 Evidence。
+如果关键材质尚未包含，先列出具体补充计划，得到我的许可后再定向补快照并继续分析。
 ```
+
+SyncLive Lite 测试时保持 UE 编辑器打开且不要进入 PIE。CodeBuddy 会先展示资产范围、数量、依赖深度和基线 Pack 指纹；只有你明确许可后才提交请求。请求状态长期为 `pending` 时，检查插件是否已加载以及 Editor Preferences > Plugins > ReadAllandExplains 中的 SyncLive Lite 开关。
 
 ## 数据发现顺序
 

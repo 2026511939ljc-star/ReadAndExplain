@@ -5,11 +5,13 @@ import hashlib
 import json
 import os
 import sys
+import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 SERVER_NAME = "readallandexplains"
-SERVER_VERSION = "0.4.0"
+SERVER_VERSION = "0.5.0"
 CONTRACT_VERSION = "rae.mcp/1.0"
 SUPPORTED_PROTOCOL_VERSIONS = ("2024-11-05", "2025-03-26", "2025-06-18", "2025-11-25")
 DEFAULT_PROTOCOL_VERSION = SUPPORTED_PROTOCOL_VERSIONS[-1]
@@ -273,6 +275,8 @@ class ContextPackStore:
                 "root_assets": manifest.get("rootAssets", []),
                 "exported_asset_count": manifest.get("exportedAssetCount", 0),
                 "dependency_depth": manifest.get("dependencyDepth", 0),
+                "origin_request_id": manifest.get("originRequestId"),
+                "base_pack_id": manifest.get("basePackId"),
             },
             warnings,
         )
@@ -675,6 +679,169 @@ class ContextPackStore:
         selected_evidence = evidence[offset : offset + len(selected)]
         return {"pack": pack, "data": {"hits": selected}, "evidence": selected_evidence, "page": page}
 
+    @property
+    def synclive_root(self) -> Path:
+        return self.export_root / "SyncLive"
+
+    @staticmethod
+    def _validate_request_id(request_id: str) -> str:
+        value = request_id.strip()
+        allowed = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
+        if not value or len(value) > 64 or any(character not in allowed for character in value):
+            raise RaeError("REQUEST_ID_INVALID", "request_id must contain 1-64 ASCII letters, numbers, '-' or '_'.")
+        return value
+
+    def _synclive_request_locations(self, request_id: str) -> dict[str, Path]:
+        filename = f"{request_id}.json"
+        return {
+            "pending": self.synclive_root / "Pending" / filename,
+            "processing": self.synclive_root / "Processing" / filename,
+            "result": self.synclive_root / "Results" / filename,
+            "archive": self.synclive_root / "Archive" / filename,
+        }
+
+    @staticmethod
+    def _write_json_atomic(path: Path, value: dict[str, Any]) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = path.with_name(path.name + ".tmp")
+        try:
+            temporary.write_text(json.dumps(value, ensure_ascii=False, indent=2), encoding="utf-8")
+            os.replace(temporary, path)
+        except OSError as exc:
+            try:
+                temporary.unlink(missing_ok=True)
+            except OSError:
+                pass
+            raise RaeError("REQUEST_WRITE_FAILED", f"Could not write SyncLive request: {path}", {"path": str(path)}) from exc
+
+    def synclive_status(self, request_id: str) -> dict[str, Any]:
+        validated_id = self._validate_request_id(request_id)
+        locations = self._synclive_request_locations(validated_id)
+        if locations["result"].is_file():
+            result = load_json(locations["result"])
+            output_pack_id = str(result.get("outputPackId", ""))
+            output_pack: Path | None = None
+            warnings: list[dict[str, str]] = []
+            if result.get("state") == "complete" and output_pack_id:
+                try:
+                    output_pack = self.resolve_pack(output_pack_id)
+                except RaeError as exc:
+                    warnings.append({"code": "OUTPUT_PACK_UNAVAILABLE", "message": exc.message})
+            return {
+                "pack": output_pack,
+                "data": {"request": result, "queue": "results"},
+                "evidence": [{"source_file": str(locations["result"].relative_to(self.export_root)).replace("\\", "/"), "json_pointer": ""}],
+                "warnings": warnings,
+            }
+        for state in ("processing", "pending"):
+            path = locations[state]
+            if path.is_file():
+                request = load_json(path)
+                return {
+                    "pack": None,
+                    "data": {"request": request, "state": state, "queue": state},
+                    "evidence": [{"source_file": str(path.relative_to(self.export_root)).replace("\\", "/"), "json_pointer": ""}],
+                }
+        if locations["archive"].is_file():
+            request = load_json(locations["archive"])
+            return {
+                "pack": None,
+                "data": {"request": request, "state": "archived_without_result", "queue": "archive"},
+                "evidence": [{"source_file": str(locations["archive"].relative_to(self.export_root)).replace("\\", "/"), "json_pointer": ""}],
+                "warnings": [{"code": "RESULT_MISSING", "message": "The request was archived but its result file is missing."}],
+            }
+        raise RaeError("REQUEST_NOT_FOUND", f"SyncLive request not found: {validated_id}", {"request_id": validated_id})
+
+    def submit_synclive_request(
+        self,
+        asset_paths: Any,
+        base_pack_fingerprint: str,
+        permission_granted: bool,
+        dependency_depth: int = 0,
+        pack_path: str | None = None,
+        request_id: str | None = None,
+        reason: str = "",
+    ) -> dict[str, Any]:
+        if permission_granted is not True:
+            raise RaeError("PERMISSION_REQUIRED", "Explicit user permission is required before submitting a targeted snapshot request.")
+        if not isinstance(asset_paths, list) or not 1 <= len(asset_paths) <= 5:
+            raise RaeError("ASSET_LIMIT_INVALID", "asset_paths must contain between 1 and 5 assets.")
+        if isinstance(dependency_depth, bool) or not isinstance(dependency_depth, int) or not 0 <= dependency_depth <= 1:
+            raise RaeError("DEPENDENCY_DEPTH_INVALID", "dependency_depth must be the integer 0 or 1.")
+
+        normalized_assets: list[str] = []
+        seen: set[str] = set()
+        for raw in asset_paths:
+            if not isinstance(raw, str):
+                raise RaeError("ASSET_PATH_INVALID", "Every asset path must be a string.")
+            asset_path = raw.strip()
+            tail = asset_path.rsplit("/", 1)[-1]
+            if not asset_path.startswith("/Game/") or ".." in asset_path or "\\" in asset_path or "\n" in asset_path or "\r" in asset_path or "." not in tail:
+                raise RaeError("ASSET_PATH_INVALID", f"Only canonical /Game/ object paths are allowed: {asset_path!r}")
+            marker = asset_path.casefold()
+            if marker not in seen:
+                seen.add(marker)
+                normalized_assets.append(asset_path)
+        if not normalized_assets:
+            raise RaeError("ASSET_LIMIT_INVALID", "At least one unique asset path is required.")
+
+        base_pack = self.resolve_pack(pack_path)
+        base_info, warnings = self.pack_info(base_pack)
+        expected_fingerprint = str(base_pack_fingerprint).strip()
+        if not expected_fingerprint or expected_fingerprint != base_info["fingerprint"]:
+            raise RaeError(
+                "BASE_PACK_FINGERPRINT_MISMATCH",
+                "The supplied base Pack fingerprint does not match the selected complete Pack.",
+                {"pack_id": base_info["pack_id"], "expected": base_info["fingerprint"], "received": expected_fingerprint},
+            )
+
+        validated_id = self._validate_request_id(request_id or f"capture_{uuid.uuid4().hex}")
+        locations = self._synclive_request_locations(validated_id)
+        request = {
+            "schemaVersion": 1,
+            "requestId": validated_id,
+            "createdUtc": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+            "mode": "targeted_context_pack",
+            "permissionGranted": True,
+            "assetPaths": normalized_assets,
+            "dependencyDepth": dependency_depth,
+            "basePackId": base_info["pack_id"],
+            "basePackFingerprint": base_info["fingerprint"],
+            "reason": str(reason).strip()[:500],
+        }
+
+        for state in ("result", "processing", "pending", "archive"):
+            path = locations[state]
+            if not path.is_file():
+                continue
+            if state == "result":
+                return self.synclive_status(validated_id)
+            existing = load_json(path)
+            comparable = {key: existing.get(key) for key in request if key != "createdUtc"}
+            expected = {key: value for key, value in request.items() if key != "createdUtc"}
+            if comparable == expected:
+                return {
+                    "pack": base_pack,
+                    "data": {"request_id": validated_id, "state": state, "request": existing, "idempotent": True},
+                    "warnings": warnings,
+                }
+            raise RaeError("REQUEST_ID_CONFLICT", f"request_id already exists with different content: {validated_id}", {"state": state})
+
+        self._write_json_atomic(locations["pending"], request)
+        return {
+            "pack": base_pack,
+            "data": {
+                "request_id": validated_id,
+                "state": "pending",
+                "request_file": str(locations["pending"]),
+                "asset_count": len(normalized_assets),
+                "dependency_depth": dependency_depth,
+                "limits": {"max_assets": 5, "max_dependency_depth": 1},
+            },
+            "evidence": [{"source_file": str(locations["pending"].relative_to(self.export_root)).replace("\\", "/"), "json_pointer": ""}],
+            "warnings": warnings,
+        }
+
 
 OUTPUT_SCHEMA = {
     "type": "object",
@@ -694,13 +861,21 @@ OUTPUT_SCHEMA = {
 }
 
 
-def tool(name: str, description: str, properties: dict[str, Any], required: list[str] | None = None) -> dict[str, Any]:
+def tool(
+    name: str,
+    description: str,
+    properties: dict[str, Any],
+    required: list[str] | None = None,
+    *,
+    read_only: bool = True,
+    idempotent: bool = True,
+) -> dict[str, Any]:
     return {
         "name": name,
         "description": description,
         "inputSchema": {"type": "object", "properties": properties, **({"required": required} if required else {})},
         "outputSchema": OUTPUT_SCHEMA,
-        "annotations": {"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False},
+        "annotations": {"readOnlyHint": read_only, "destructiveHint": False, "idempotentHint": idempotent, "openWorldHint": False},
     }
 
 
@@ -724,6 +899,23 @@ TOOLS = [
         ["asset", "section"],
     ),
     tool("search_export_text", "Search readable documents and metadata without loading complete files.", {"query": {"type": "string", "minLength": 1}, "asset": {"type": "string"}, "pack_path": PACK_ARG, "offset": OFFSET_ARG, "limit": {"type": "integer", "minimum": 1, "maximum": 100, "default": 20}}, ["query"]),
+    tool(
+        "request_targeted_snapshot",
+        "After explicit user permission, atomically queue a bounded UE editor request for 1-5 /Game/ assets and dependency depth 0-1. The request is bound to an exact complete base Pack fingerprint.",
+        {
+            "asset_paths": {"type": "array", "items": {"type": "string", "pattern": "^/Game/"}, "minItems": 1, "maxItems": 5, "uniqueItems": True},
+            "base_pack_fingerprint": {"type": "string", "minLength": 1},
+            "permission_granted": {"type": "boolean", "const": True},
+            "dependency_depth": {"type": "integer", "minimum": 0, "maximum": 1, "default": 0},
+            "pack_path": PACK_ARG,
+            "request_id": {"type": "string", "pattern": "^[A-Za-z0-9_-]{1,64}$"},
+            "reason": {"type": "string", "maxLength": 500},
+        },
+        ["asset_paths", "base_pack_fingerprint", "permission_granted"],
+        read_only=False,
+        idempotent=False,
+    ),
+    tool("get_snapshot_request_status", "Read the pending, processing, complete, failed or rejected state of one SyncLive Lite request.", {"request_id": {"type": "string", "pattern": "^[A-Za-z0-9_-]{1,64}$"}}, ["request_id"]),
 ]
 
 
@@ -791,6 +983,18 @@ def call_tool(store: ContextPackStore, name: str, arguments: dict[str, Any]) -> 
         payload = store.detail(str(arguments["asset"]), str(arguments["section"]), arguments.get("item_id"), arguments.get("pack_path"), offset, int(arguments.get("limit", 100)))
     elif name == "search_export_text":
         payload = store.search_text(str(arguments["query"]), arguments.get("asset"), arguments.get("pack_path"), offset, limit)
+    elif name == "request_targeted_snapshot":
+        payload = store.submit_synclive_request(
+            arguments.get("asset_paths"),
+            str(arguments.get("base_pack_fingerprint", "")),
+            arguments.get("permission_granted") is True,
+            arguments.get("dependency_depth", 0),
+            arguments.get("pack_path"),
+            arguments.get("request_id"),
+            str(arguments.get("reason", "")),
+        )
+    elif name == "get_snapshot_request_status":
+        payload = store.synclive_status(str(arguments.get("request_id", "")))
     else:
         raise RaeError("TOOL_NOT_FOUND", f"Unknown tool: {name}", {"tool": name})
     return envelope(store, payload)
@@ -817,7 +1021,7 @@ def handle_request(store: ContextPackStore, request: dict[str, Any]) -> dict[str
                 "protocolVersion": requested,
                 "capabilities": {"tools": {"listChanged": False}},
                 "serverInfo": {"name": SERVER_NAME, "version": SERVER_VERSION},
-                "instructions": "Split broad requests into small asset questions. Use search_assets, get_asset_summary, then coverage before cross-asset drill-down. Cite evidence, inspect missing_fields, and request permission before any targeted re-snapshot.",
+                "instructions": "Split broad requests into small asset questions. Use search_assets, get_asset_summary, then coverage before cross-asset drill-down. Cite evidence and inspect missing_fields. Only after explicit user permission, bind a bounded request_targeted_snapshot call to the current Pack fingerprint, poll get_snapshot_request_status, verify the new complete Pack, and resume the interrupted task.",
             },
         )
     if method == "ping":
@@ -854,7 +1058,7 @@ def serve(store: ContextPackStore) -> None:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Read-only MCP server for ReadAllandExplains Context Packs")
+    parser = argparse.ArgumentParser(description="Progressive Context Pack MCP server with bounded, permission-gated SyncLive Lite requests")
     parser.add_argument("--root", type=Path, default=None, help="ReadAllandExplainsExports directory or its ContextPacks child")
     parser.add_argument("--self-test", action="store_true", help="Print the latest-pack envelope and exit")
     parser.add_argument("--diagnose", action="store_true", help="Print CodeBuddy workspace discovery diagnostics and exit")

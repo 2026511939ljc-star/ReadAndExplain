@@ -131,11 +131,14 @@ class ContractTests(unittest.TestCase):
         material_readable.write_text("# M_Test\n", encoding="utf-8")
 
     def test_all_tools_publish_read_only_contract(self) -> None:
-        self.assertEqual(5, len(rae.TOOLS))
-        for descriptor in rae.TOOLS:
-            self.assertTrue(descriptor["annotations"]["readOnlyHint"])
+        self.assertEqual(7, len(rae.TOOLS))
+        descriptors = {descriptor["name"]: descriptor for descriptor in rae.TOOLS}
+        for name, descriptor in descriptors.items():
+            self.assertEqual(name != "request_targeted_snapshot", descriptor["annotations"]["readOnlyHint"])
             self.assertFalse(descriptor["annotations"]["destructiveHint"])
             self.assertEqual(rae.OUTPUT_SCHEMA, descriptor["outputSchema"])
+        self.assertFalse(descriptors["request_targeted_snapshot"]["annotations"]["idempotentHint"])
+        self.assertTrue(descriptors["get_snapshot_request_status"]["annotations"]["idempotentHint"])
 
     def test_search_returns_envelope_and_evidence(self) -> None:
         result = rae.call_tool(self.store, "search_assets", {"query": "NS_Test", "limit": 20})
@@ -196,6 +199,104 @@ class ContractTests(unittest.TestCase):
         with self.assertRaises(rae.RaeError) as raised:
             self.store.detail("NS_Test", "readable", None, None, 0, 100)
         self.assertEqual("TEXT_ENCODING_INVALID", raised.exception.code)
+
+    def test_targeted_snapshot_requires_explicit_permission(self) -> None:
+        fingerprint = self.store.pack_info(self.complete)[0]["fingerprint"]
+        with self.assertRaises(rae.RaeError) as raised:
+            self.store.submit_synclive_request(
+                ["/Game/Test/M_Missing.M_Missing"],
+                fingerprint,
+                False,
+                request_id="permission-test",
+            )
+        self.assertEqual("PERMISSION_REQUIRED", raised.exception.code)
+        self.assertFalse((self.root / "SyncLive" / "Pending" / "permission-test.json").exists())
+
+    def test_targeted_snapshot_is_bounded_bound_to_pack_and_atomic(self) -> None:
+        pack_info = self.store.pack_info(self.complete)[0]
+        result = rae.call_tool(
+            self.store,
+            "request_targeted_snapshot",
+            {
+                "asset_paths": ["/Game/Test/M_Missing.M_Missing"],
+                "base_pack_fingerprint": pack_info["fingerprint"],
+                "permission_granted": True,
+                "dependency_depth": 0,
+                "pack_path": pack_info["pack_id"],
+                "request_id": "capture-test",
+                "reason": "补充缺失材质",
+            },
+        )
+        self.assertEqual("pending", result["data"]["state"])
+        self.assertEqual(pack_info["pack_id"], result["pack"]["pack_id"])
+        pending = self.root / "SyncLive" / "Pending" / "capture-test.json"
+        request = json.loads(pending.read_text(encoding="utf-8"))
+        self.assertTrue(request["permissionGranted"])
+        self.assertEqual(pack_info["fingerprint"], request["basePackFingerprint"])
+        self.assertEqual(["/Game/Test/M_Missing.M_Missing"], request["assetPaths"])
+        self.assertEqual("补充缺失材质", request["reason"])
+        self.assertFalse(pending.with_name(pending.name + ".tmp").exists())
+
+        status = rae.call_tool(self.store, "get_snapshot_request_status", {"request_id": "capture-test"})
+        self.assertEqual("pending", status["data"]["state"])
+        self.assertEqual("SyncLive/Pending/capture-test.json", status["evidence"][0]["source_file"])
+
+    def test_targeted_snapshot_rejects_stale_fingerprint_and_unsafe_scope(self) -> None:
+        with self.assertRaises(rae.RaeError) as stale:
+            self.store.submit_synclive_request(
+                ["/Game/Test/M_Missing.M_Missing"],
+                "blake3-160:stale",
+                True,
+                request_id="stale-test",
+            )
+        self.assertEqual("BASE_PACK_FINGERPRINT_MISMATCH", stale.exception.code)
+
+        fingerprint = self.store.pack_info(self.complete)[0]["fingerprint"]
+        invalid_cases = [
+            (["/Engine/Test.Asset"], 0, "ASSET_PATH_INVALID"),
+            ([f"/Game/Test/M_{index}.M_{index}" for index in range(6)], 0, "ASSET_LIMIT_INVALID"),
+            (["/Game/Test/M_Missing.M_Missing"], 2, "DEPENDENCY_DEPTH_INVALID"),
+        ]
+        for index, (assets, depth, expected_code) in enumerate(invalid_cases):
+            with self.subTest(index=index), self.assertRaises(rae.RaeError) as raised:
+                self.store.submit_synclive_request(assets, fingerprint, True, depth, request_id=f"invalid-{index}")
+            self.assertEqual(expected_code, raised.exception.code)
+
+    def test_targeted_snapshot_request_id_is_idempotent_or_conflicting(self) -> None:
+        fingerprint = self.store.pack_info(self.complete)[0]["fingerprint"]
+        arguments = (["/Game/Test/M_Missing.M_Missing"], fingerprint, True)
+        first = self.store.submit_synclive_request(*arguments, request_id="stable-request", reason="same")
+        second = self.store.submit_synclive_request(*arguments, request_id="stable-request", reason="same")
+        self.assertEqual("pending", first["data"]["state"])
+        self.assertTrue(second["data"]["idempotent"])
+        with self.assertRaises(rae.RaeError) as raised:
+            self.store.submit_synclive_request(
+                ["/Game/Test/M_Other.M_Other"],
+                fingerprint,
+                True,
+                request_id="stable-request",
+                reason="different",
+            )
+        self.assertEqual("REQUEST_ID_CONFLICT", raised.exception.code)
+
+    def test_completed_snapshot_status_resolves_new_complete_pack(self) -> None:
+        completed_pack = self.packs / "ContextPack_Targeted"
+        self._write_pack(completed_pack, state="complete", schema=1)
+        result_path = self.root / "SyncLive" / "Results" / "completed-request.json"
+        self._dump(
+            result_path,
+            {
+                "schemaVersion": 1,
+                "requestId": "completed-request",
+                "state": "complete",
+                "outputPackId": "ContextPack_Targeted",
+                "basePackId": "ContextPack_Complete",
+            },
+        )
+        result = rae.call_tool(self.store, "get_snapshot_request_status", {"request_id": "completed-request"})
+        self.assertEqual("complete", result["data"]["request"]["state"])
+        self.assertEqual("ContextPack_Targeted", result["pack"]["pack_id"])
+        self.assertEqual("SyncLive/Results/completed-request.json", result["evidence"][0]["source_file"])
 
     def test_skill_requires_progressive_budgeted_missing_dependency_flow(self) -> None:
         skill = SKILL_PATH.read_text(encoding="utf-8-sig")

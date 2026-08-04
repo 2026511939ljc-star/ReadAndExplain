@@ -1,9 +1,9 @@
 {
 	"FileVersion": 3,
-	"Version": 11,
-	"VersionName": "4.6.0-preview.2",
+	"Version": 12,
+	"VersionName": "4.6.0-preview.3",
 	"FriendlyName": "ReadAllandExplains",
-	"Description": "UE asset AI Context Compiler with progressive analysis, dependency coverage, strict UTF-8, and evidence-backed Context Packs.",
+	"Description": "UE asset AI Context Compiler with permission-gated SyncLive Lite, progressive analysis, and evidence-backed Context Packs.",
 	"Category": "Editor",
 	"CreatedBy": "Aoife",
 	"CreatedByURL": "",

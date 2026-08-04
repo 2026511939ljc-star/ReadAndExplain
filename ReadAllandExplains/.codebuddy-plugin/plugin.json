@@ -1,8 +1,8 @@
 {
   "name": "readallandexplains",
-  "version": "4.6.0-preview.2",
-  "description": "ReadAllandExplains for CodeBuddy: split Unreal Engine asset questions into progressive, evidence-backed analysis with targeted dependency coverage.",
-  "description_en": "Progressive Unreal Engine technical-art Context Pack analysis with dependency coverage, strict UTF-8, and evidence-aware guidance.",
+  "version": "4.6.0-preview.3",
+  "description": "ReadAllandExplains for CodeBuddy: progressive UE asset analysis with permission-gated, bounded SyncLive Lite targeted snapshots.",
+  "description_en": "Progressive Unreal Engine asset analysis with permission-gated SyncLive Lite and evidence-backed Context Packs.",
   "author": {
     "name": "Aoife"
   },
