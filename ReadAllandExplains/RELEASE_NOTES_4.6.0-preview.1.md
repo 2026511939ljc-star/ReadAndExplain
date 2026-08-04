@@ -14,6 +14,8 @@
 8. Manifest 增加 `packId`、`state`、包指纹，以及各文件的包内相对路径、大小与 BLAKE3-160 内容指纹。
 9. MCP 会校验新 Manifest 文件清单的目录边界、存在性和大小，异常包返回 `PACK_INCOMPLETE`。
 10. 新增无第三方依赖的 Golden Context Pack 契约测试。
+11. 新增 CodeBuddy 原生插件清单、市场清单、Skill、诊断命令与无绝对路径的 MCP 配置，并自动发现当前或嵌套 UE 项目的导出目录。
+12. 兼容 CodeBuddy 2.132.0 使用的 MCP `2025-11-25` 协议版本。
 
 ## 验证
 
@@ -21,7 +23,8 @@
 - 独立 CompileHost 真实导出 `DefaultMaterial` Context Pack 成功，Manifest 为 `state=complete`，无 `.tmp` 残留。
 - Manifest 文件清单共 5 项，路径均为包内相对路径，文件存在且大小一致。
 - MCP 成功自动发现新包并读取 `DefaultMaterial` 摘要，返回 Manifest 自带 BLAKE3-160 包指纹和元数据 Evidence。
-- 14 项 MCP 契约测试通过。
+- CodeBuddy 官方校验器已通过插件和市场清单；开发加载成功识别 1 个 Command、1 个 Skill 和 1 个 MCP Server。
+- 16 项 MCP 契约测试通过，包含 CodeBuddy 工作区自动发现、显式根目录覆盖和协议兼容。
 
 运行测试：
 

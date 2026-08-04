@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "readallandexplains": {
+      "type": "stdio",
+      "command": "python",
+      "args": [
+        "${CODEBUDDY_PLUGIN_ROOT}/Integrations/MCP/readallandexplains_mcp.py"
+      ]
+    }
+  },
+  "disabledMcpServers": []
+}

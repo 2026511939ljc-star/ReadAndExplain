@@ -9,6 +9,7 @@ ReadAllandExplains 是面向 Unreal Engine 技术美术资产的 AI Context Comp
 3. Context Pack 使用 `.tmp` 目录生成，Manifest 从 `writing` 切换为 `complete` 后再同目录重命名发布，避免读取半写快照。
 4. Manifest 增加 `packId`、状态、包内相对路径、文件大小与 BLAKE3-160 内容指纹。
 5. 新增无第三方依赖的 Golden Context Pack 契约测试，覆盖协议、Evidence、分页、错误码、Schema、writing 包跳过与路径越界。
+6. 新增 CodeBuddy 原生插件清单、MCP 配置、诊断命令和 UE 工作区自动发现，可通过 `codebuddy --plugin-dir .` 直接测试。
 
 ## 4.5.0-preview.1
 
@@ -29,12 +30,14 @@ ReadAllandExplains 是面向 Unreal Engine 技术美术资产的 AI Context Comp
 
 无界面命令：`ReadAllandExplains.ExportAssets` 和 `ReadAllandExplains.ExportContextPack`。旧命令 `GetTheMeaning.ExportAssets` 继续兼容。
 
-## Skill 与 MCP
+## Skill、MCP 与 CodeBuddy
 
-- Skill 位于 `Skills/readallandexplains/SKILL.md`，负责 UE 资产解释、曲线分析、HLSL 阅读和按需查询流程。
+- Skill 位于 `skills/readallandexplains/SKILL.md`，负责 UE 资产解释、曲线分析、HLSL 阅读和按需查询流程。
 - MCP 位于 `Integrations/MCP/readallandexplains_mcp.py`，只读访问导出缓存，不直接修改 `.uasset`。
-- Windows 可通过 `Integrations/MCP/readallandexplains_mcp.bat` 启动；客户端配置参考 `Integrations/MCP/mcp-config.example.json`。
-- 可设置环境变量 `READALL_EXPORT_ROOT`，或启动时传入 `--root <ReadAllandExplainsExports>`。
+- CodeBuddy 原生入口为 `.codebuddy-plugin/plugin.json` 和 `.mcp.json`；本地验证运行 `codebuddy plugin validate .`，测试运行 `codebuddy --plugin-dir .`。
+- CodeBuddy 会通过 `CODEBUDDY_PROJECT_DIR` 自动寻找当前或嵌套 UE 项目的 `Saved/ReadAllandExplainsExports`；仍可用 `READALL_EXPORT_ROOT` 或 `--root` 显式覆盖。
+- 诊断命令：`/readallandexplains:readallandexplains-doctor`。
+- Windows 可通过 `Integrations/MCP/readallandexplains_mcp.bat` 单独启动；通用客户端配置参考 `Integrations/MCP/mcp-config.example.json`。
 - MCP 工具：`list_context_packs`、`search_assets`、`get_asset_summary`、`get_asset_detail`、`search_export_text`。
 - 运行契约测试：`python -m unittest discover -s Tests/MCP -p "test_*.py" -v`。
 

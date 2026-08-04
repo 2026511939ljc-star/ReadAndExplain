@@ -7,6 +7,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 MODULE_PATH = Path(__file__).resolve().parents[2] / "Integrations" / "MCP" / "readallandexplains_mcp.py"
 SPEC = importlib.util.spec_from_file_location("readallandexplains_mcp", MODULE_PATH)
@@ -198,6 +199,13 @@ class ContractTests(unittest.TestCase):
         self.assertEqual("PACK_OUTSIDE_ROOT", raised.exception.code)
 
     def test_protocol_compatibility_is_validated(self) -> None:
+        supported = rae.handle_request(
+            self.store,
+            {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"protocolVersion": "2025-11-25"}},
+        )
+        assert supported
+        self.assertEqual("2025-11-25", supported["result"]["protocolVersion"])
+
         response = rae.handle_request(
             self.store,
             {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"protocolVersion": "2099-01-01"}},
@@ -211,6 +219,28 @@ class ContractTests(unittest.TestCase):
         self.assertEqual(1, result["page"]["total"])
         self.assertEqual(3, result["evidence"][0]["line"])
         self.assertEqual("Niagara/NS_Test_ReadableNiagara.md", result["evidence"][0]["source_file"])
+
+    def test_codebuddy_project_root_discovers_nested_unreal_project(self) -> None:
+        workspace = Path(self.temp.name) / "Workspace"
+        project = workspace / "Games" / "Trans"
+        (project / "Trans.uproject").parent.mkdir(parents=True, exist_ok=True)
+        (project / "Trans.uproject").write_text("{}", encoding="utf-8")
+        discovered_pack = project / "Saved" / "ReadAllandExplainsExports" / "ContextPacks" / "ContextPack_CodeBuddy"
+        self._write_pack(discovered_pack, state="complete", schema=1)
+        with mock.patch.dict(
+            os.environ,
+            {"CODEBUDDY_PROJECT_DIR": str(workspace), "READALL_EXPORT_ROOT": ""},
+            clear=False,
+        ):
+            self.assertEqual(
+                (project / "Saved" / "ReadAllandExplainsExports").resolve(),
+                rae.default_export_root(),
+            )
+
+    def test_export_root_environment_override_has_priority(self) -> None:
+        explicit = Path(self.temp.name) / "ExplicitExports"
+        with mock.patch.dict(os.environ, {"READALL_EXPORT_ROOT": str(explicit)}, clear=False):
+            self.assertEqual(explicit.resolve(), rae.default_export_root().resolve())
 
 
 if __name__ == "__main__":

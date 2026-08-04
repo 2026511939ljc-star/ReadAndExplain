@@ -9,9 +9,9 @@ from pathlib import Path
 from typing import Any
 
 SERVER_NAME = "readallandexplains"
-SERVER_VERSION = "0.2.0"
+SERVER_VERSION = "0.3.0"
 CONTRACT_VERSION = "rae.mcp/1.0"
-SUPPORTED_PROTOCOL_VERSIONS = ("2024-11-05", "2025-03-26", "2025-06-18")
+SUPPORTED_PROTOCOL_VERSIONS = ("2024-11-05", "2025-03-26", "2025-06-18", "2025-11-25")
 DEFAULT_PROTOCOL_VERSION = SUPPORTED_PROTOCOL_VERSIONS[-1]
 SUPPORTED_PACK_SCHEMAS = {1}
 MAX_OUTPUT_CHARS = 60000
@@ -42,18 +42,117 @@ def json_text(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, indent=2)
 
 
-def default_export_root() -> Path:
+def _workspace_roots() -> list[Path]:
+    roots: list[Path] = []
+    configured_keys = (
+        "CODEBUDDY_PROJECT_DIR",
+        "CODEBUDDY_WORKSPACE_ROOT",
+        "CLAUDE_PROJECT_DIR",
+        "CODEBUDDY_WORKSPACE",
+        "CODEBUDDY_WORKSPACE_FOLDER",
+        "WORKSPACE_FOLDER",
+        "INIT_CWD",
+    )
+    for key in configured_keys:
+        configured = os.environ.get(key, "").strip()
+        if configured:
+            roots.append(Path(configured).expanduser())
+    current = Path.cwd()
+    roots.extend([current, *current.parents])
+    unique: list[Path] = []
+    seen: set[str] = set()
+    for root in roots:
+        try:
+            resolved = root.resolve()
+        except OSError:
+            continue
+        marker = str(resolved).casefold()
+        if marker not in seen:
+            seen.add(marker)
+            unique.append(resolved)
+    return unique
+
+
+def _nested_ue_export_roots(workspace: Path, maximum_depth: int = 4) -> list[Path]:
+    if not workspace.is_dir():
+        return []
+    ignored = {".git", ".codebuddy", "binaries", "deriveddatacache", "intermediate", "node_modules", "saved"}
+    output: list[Path] = []
+    pending: list[tuple[Path, int]] = [(workspace, 0)]
+    visited = 0
+    while pending and visited < 2000:
+        directory, depth = pending.pop(0)
+        visited += 1
+        try:
+            children = list(directory.iterdir())
+        except OSError:
+            continue
+        if any(child.is_file() and child.suffix.casefold() == ".uproject" for child in children):
+            output.append(directory / "Saved" / "ReadAllandExplainsExports")
+        if depth >= maximum_depth:
+            continue
+        for child in children:
+            if child.is_dir() and child.name.casefold() not in ignored:
+                pending.append((child, depth + 1))
+    return output
+
+
+def export_root_candidates() -> list[Path]:
     configured = os.environ.get("READALL_EXPORT_ROOT", "").strip()
     if configured:
-        return Path(configured).expanduser()
-    working_candidate = Path.cwd() / "Saved" / "ReadAllandExplainsExports"
-    candidates = [working_candidate]
+        return [Path(configured).expanduser()]
+    candidates: list[Path] = []
+    workspaces = _workspace_roots()
+    for workspace in workspaces:
+        candidates.append(workspace / "Saved" / "ReadAllandExplainsExports")
+    for workspace in workspaces[:2]:
+        candidates.extend(_nested_ue_export_roots(workspace))
     for parent in Path(__file__).resolve().parents:
         candidates.append(parent / "Saved" / "ReadAllandExplainsExports")
+    unique: list[Path] = []
+    seen: set[str] = set()
+    for candidate in candidates:
+        try:
+            resolved = candidate.resolve()
+        except OSError:
+            continue
+        marker = str(resolved).casefold()
+        if marker not in seen:
+            seen.add(marker)
+            unique.append(resolved)
+    return unique
+
+
+def default_export_root() -> Path:
+    candidates = export_root_candidates()
+    for candidate in candidates:
+        packs_root = candidate if candidate.name.casefold() == "contextpacks" else candidate / "ContextPacks"
+        if packs_root.is_dir() and any((path / "context-pack.json").is_file() for path in packs_root.iterdir() if path.is_dir()):
+            return candidate
     for candidate in candidates:
         if candidate.exists():
             return candidate
-    return working_candidate
+    return candidates[0]
+
+
+def diagnostics(root: Path) -> dict[str, Any]:
+    resolved = root.expanduser().resolve()
+    packs_root = resolved if resolved.name.casefold() == "contextpacks" else resolved / "ContextPacks"
+    packs = []
+    if packs_root.is_dir():
+        packs = sorted(path.name for path in packs_root.iterdir() if path.is_dir() and (path / "context-pack.json").is_file())
+    return {
+        "server": {"name": SERVER_NAME, "version": SERVER_VERSION},
+        "python": sys.version.split()[0],
+        "working_directory": str(Path.cwd()),
+        "export_root": str(resolved),
+        "export_root_exists": resolved.is_dir(),
+        "context_packs_root": str(packs_root),
+        "context_pack_count": len(packs),
+        "context_packs": packs,
+        "environment_override": os.environ.get("READALL_EXPORT_ROOT") or None,
+        "candidate_roots": [str(path) for path in export_root_candidates()],
+    }
 
 
 def page_info(offset: int = 0, limit: int = 0, returned: int = 0, total: int = 0) -> dict[str, Any]:
@@ -652,10 +751,15 @@ def serve(store: ContextPackStore) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Read-only MCP server for ReadAllandExplains Context Packs")
-    parser.add_argument("--root", type=Path, default=default_export_root(), help="ReadAllandExplainsExports directory or its ContextPacks child")
+    parser.add_argument("--root", type=Path, default=None, help="ReadAllandExplainsExports directory or its ContextPacks child")
     parser.add_argument("--self-test", action="store_true", help="Print the latest-pack envelope and exit")
+    parser.add_argument("--diagnose", action="store_true", help="Print CodeBuddy workspace discovery diagnostics and exit")
     args = parser.parse_args()
-    store = ContextPackStore(args.root)
+    export_root = args.root or default_export_root()
+    store = ContextPackStore(export_root)
+    if args.diagnose:
+        print(json_text(diagnostics(export_root)))
+        return
     if args.self_test:
         print(json_text(envelope(store, store.list_packs(0, 1))))
         return
