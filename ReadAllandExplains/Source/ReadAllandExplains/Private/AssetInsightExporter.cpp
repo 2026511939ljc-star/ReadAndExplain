@@ -6,6 +6,7 @@
 
 #include "AssetRegistry/AssetRegistryModule.h"
 #include "AssetRegistry/IAssetRegistry.h"
+#include "Misc/SecureHash.h"
 #include "Dom/JsonObject.h"
 #include "Serialization/JsonSerializer.h"
 #include "Serialization/JsonWriter.h"
@@ -1009,20 +1010,47 @@ namespace AssetInsightImpl
 		OutRenderers.Sort([](const FReadAllNiagaraRendererIR& A, const FReadAllNiagaraRendererIR& B) { return A.Id < B.Id; });
 	}
 
+	static FString BuildCurveFingerprint(const FReadAllNiagaraCurveIR& Curve)
+	{
+		FString Canonical;
+		Canonical += Curve.ClassPath + TEXT("|") + Curve.CurveAssetPath + TEXT("|");
+		Canonical += Curve.bUseLUT ? TEXT("lut=1|") : TEXT("lut=0|");
+		Canonical += Curve.bExposeCurve ? TEXT("expose=1|") : TEXT("expose=0|");
+		for (const FReadAllNiagaraCurveChannelIR& Channel : Curve.Channels)
+		{
+			Canonical += Channel.Name + TEXT("|") + Channel.PreInfinityExtrapolation + TEXT("|") + Channel.PostInfinityExtrapolation + TEXT("|");
+			for (const FReadAllNiagaraCurveKeyIR& Key : Channel.Keys)
+			{
+				Canonical += FString::Printf(
+					TEXT("%.9g,%.9g,%s,%s,%s,%.9g,%.9g,%.9g,%.9g;"),
+					Key.Time,
+					Key.Value,
+					*Key.Interpolation,
+					*Key.TangentMode,
+					*Key.TangentWeightMode,
+					Key.ArriveTangent,
+					Key.ArriveTangentWeight,
+					Key.LeaveTangent,
+					Key.LeaveTangentWeight);
+			}
+		}
+		return FMD5::HashAnsiString(*Canonical).ToLower();
+	}
+
 	static void CollectCurveDataInterface(
 		UNiagaraDataInterfaceCurveBase* CurveInterface,
 		const FString& OwnerGraphId,
-		TSet<FString>& CollectedIds,
+		TSet<FString>& CollectedObjectPaths,
+		TMap<FString, int32>& CurveIndexByFingerprint,
 		TArray<FReadAllNiagaraCurveIR>& OutCurves)
 	{
 		if (!CurveInterface) return;
-		const FString Id = CurveInterface->GetPathName();
-		if (CollectedIds.Contains(Id)) return;
-		CollectedIds.Add(Id);
+		const FString ObjectPath = CurveInterface->GetPathName();
+		if (CollectedObjectPaths.Contains(ObjectPath)) return;
+		CollectedObjectPaths.Add(ObjectPath);
 
 		FReadAllNiagaraCurveIR Result;
-		Result.Id = Id;
-		Result.ObjectPath = CurveInterface->GetPathName();
+		Result.ObjectPath = ObjectPath;
 		Result.ClassPath = CurveInterface->GetClass()->GetPathName();
 		Result.OwnerGraphId = OwnerGraphId;
 		Result.ExposedName = CurveInterface->ExposedName.ToString();
@@ -1069,25 +1097,42 @@ namespace AssetInsightImpl
 			}
 			Result.Channels.Add(MoveTemp(Channel));
 		}
+
+		Result.Fingerprint = BuildCurveFingerprint(Result);
+		Result.Id = TEXT("curve-") + Result.Fingerprint.Left(16);
+		Result.UsedBy.AddUnique(OwnerGraphId.IsEmpty() ? ObjectPath : OwnerGraphId + TEXT(" :: ") + ObjectPath);
+		if (int32* ExistingIndex = CurveIndexByFingerprint.Find(Result.Fingerprint))
+		{
+			FReadAllNiagaraCurveIR& Existing = OutCurves[*ExistingIndex];
+			for (const FString& Usage : Result.UsedBy)
+			{
+				Existing.UsedBy.AddUnique(Usage);
+			}
+			Existing.UsedBy.Sort();
+			return;
+		}
+
+		CurveIndexByFingerprint.Add(Result.Fingerprint, OutCurves.Num());
 		OutCurves.Add(MoveTemp(Result));
 	}
 
 	static void CollectCurvesUnderObject(
 		UObject* Root,
 		const FString& OwnerGraphId,
-		TSet<FString>& CollectedIds,
+		TSet<FString>& CollectedObjectPaths,
+		TMap<FString, int32>& CurveIndexByFingerprint,
 		TArray<FReadAllNiagaraCurveIR>& OutCurves)
 	{
 		if (!Root) return;
 		if (UNiagaraDataInterfaceCurveBase* RootCurve = Cast<UNiagaraDataInterfaceCurveBase>(Root))
 		{
-			CollectCurveDataInterface(RootCurve, OwnerGraphId, CollectedIds, OutCurves);
+			CollectCurveDataInterface(RootCurve, OwnerGraphId, CollectedObjectPaths, CurveIndexByFingerprint, OutCurves);
 		}
 		TArray<UObject*> Objects;
 		GetObjectsWithOuter(Root, Objects, true);
 		for (UObject* Object : Objects)
 		{
-			CollectCurveDataInterface(Cast<UNiagaraDataInterfaceCurveBase>(Object), OwnerGraphId, CollectedIds, OutCurves);
+			CollectCurveDataInterface(Cast<UNiagaraDataInterfaceCurveBase>(Object), OwnerGraphId, CollectedObjectPaths, CurveIndexByFingerprint, OutCurves);
 		}
 	}
 
@@ -1097,15 +1142,16 @@ namespace AssetInsightImpl
 		TArray<FReadAllNiagaraCurveIR>& OutCurves)
 	{
 		OutCurves.Reset();
-		TSet<FString> CollectedIds;
+		TSet<FString> CollectedObjectPaths;
+		TMap<FString, int32> CurveIndexByFingerprint;
 		for (const FReadAllGraphIR& Graph : Graphs)
 		{
 			if (UNiagaraGraph* SourceGraph = Cast<UNiagaraGraph>(StaticFindObject(UNiagaraGraph::StaticClass(), nullptr, *Graph.Id)))
 			{
-				CollectCurvesUnderObject(SourceGraph, Graph.Id, CollectedIds, OutCurves);
+				CollectCurvesUnderObject(SourceGraph, Graph.Id, CollectedObjectPaths, CurveIndexByFingerprint, OutCurves);
 			}
 		}
-		CollectCurvesUnderObject(Asset, FString(), CollectedIds, OutCurves);
+		CollectCurvesUnderObject(Asset, FString(), CollectedObjectPaths, CurveIndexByFingerprint, OutCurves);
 		OutCurves.Sort([](const FReadAllNiagaraCurveIR& A, const FReadAllNiagaraCurveIR& B) { return A.Id < B.Id; });
 	}
 

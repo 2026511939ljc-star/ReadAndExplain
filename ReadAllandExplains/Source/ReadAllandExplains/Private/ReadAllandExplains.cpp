@@ -7,6 +7,12 @@
 #include "MaterialToTextExporter.h"
 #include "NiagaraToTextExporter.h"
 #include "ReadAllandExplainsSettings.h"
+#include "AssetRegistry/AssetRegistryModule.h"
+#include "AssetRegistry/IAssetRegistry.h"
+#include "AssetRegistry/ARFilter.h"
+#include "Dom/JsonObject.h"
+#include "Serialization/JsonSerializer.h"
+#include "Serialization/JsonWriter.h"
 #include "Blueprint/BlueprintSupport.h"
 #include "Engine/Blueprint.h"
 #include "Engine/CurveTable.h"
@@ -125,15 +131,22 @@ namespace ReadAllandExplainsExportImpl
 	// 尝试把单个资产按类型导出；返回：0=成功, 1=失败（类型支持但导出空或保存失败）, 2=跳过（类型不支持）
 	enum class EExportResult : uint8 { Success, Failed, Skipped };
 
-	static EExportResult ExportOneAsset(const FAssetData& AssetData, FString& OutSavedPath)
+	static EExportResult ExportOneAsset(const FAssetData& AssetData, FString& OutSavedPath, const FString& ExportRootOverride = FString())
 	{
 		UObject* Obj = AssetData.GetAsset();
 		if (!Obj) return EExportResult::Failed;
 
+		const FString BlueprintDir = ExportRootOverride.IsEmpty() ? GetBlueprintExportDir() : ExportRootOverride / TEXT("Blueprints");
+		const FString MaterialDir = ExportRootOverride.IsEmpty() ? GetMaterialExportDir() : ExportRootOverride / TEXT("Materials");
+		const FString NiagaraDir = ExportRootOverride.IsEmpty() ? GetNiagaraExportDir() : ExportRootOverride / TEXT("Niagara");
+		const FString CommonDir = ExportRootOverride.IsEmpty()
+			? GetCommonAssetExportDir(Obj)
+			: ExportRootOverride / FCommonAssetToTextExporter::GetExportFolderName(Obj);
+
 		// 蓝图
 		if (UBlueprint* Blueprint = Cast<UBlueprint>(Obj))
 		{
-			const FString Saved = SaveAssetDocument(AssetData, Blueprint, FBlueprintToTextExporter::ExportBlueprintToText(Blueprint), GetBlueprintExportDir(), TEXT("_ReadableCode.txt"));
+			const FString Saved = SaveAssetDocument(AssetData, Blueprint, FBlueprintToTextExporter::ExportBlueprintToText(Blueprint), BlueprintDir, TEXT("_ReadableCode.txt"));
 			if (Saved.IsEmpty()) return EExportResult::Failed;
 			OutSavedPath = Saved;
 			return EExportResult::Success;
@@ -142,7 +155,7 @@ namespace ReadAllandExplainsExportImpl
 		// 材质 / 材质实例（注意：UMaterialInstance 也是 UMaterialInterface）
 		if (UMaterialInterface* MatIface = Cast<UMaterialInterface>(Obj))
 		{
-			const FString Saved = SaveAssetDocument(AssetData, MatIface, FMaterialToTextExporter::ExportMaterialToText(MatIface), GetMaterialExportDir(), TEXT("_ReadableMaterial.md"));
+			const FString Saved = SaveAssetDocument(AssetData, MatIface, FMaterialToTextExporter::ExportMaterialToText(MatIface), MaterialDir, TEXT("_ReadableMaterial.md"));
 			if (Saved.IsEmpty()) return EExportResult::Failed;
 			OutSavedPath = Saved;
 			return EExportResult::Success;
@@ -151,7 +164,7 @@ namespace ReadAllandExplainsExportImpl
 		// 材质函数
 		if (UMaterialFunctionInterface* MatFunc = Cast<UMaterialFunctionInterface>(Obj))
 		{
-			const FString Saved = SaveAssetDocument(AssetData, MatFunc, FMaterialToTextExporter::ExportMaterialFunctionToText(MatFunc), GetMaterialExportDir(), TEXT("_ReadableMaterialFunction.md"));
+			const FString Saved = SaveAssetDocument(AssetData, MatFunc, FMaterialToTextExporter::ExportMaterialFunctionToText(MatFunc), MaterialDir, TEXT("_ReadableMaterialFunction.md"));
 			if (Saved.IsEmpty()) return EExportResult::Failed;
 			OutSavedPath = Saved;
 			return EExportResult::Success;
@@ -160,7 +173,7 @@ namespace ReadAllandExplainsExportImpl
 		// Niagara System / Emitter / Script（Module、Dynamic Input 等也属于 UNiagaraScript）
 		if (Obj->IsA<UNiagaraSystem>() || Obj->IsA<UNiagaraEmitter>() || Obj->IsA<UNiagaraScript>())
 		{
-			const FString Saved = SaveAssetDocument(AssetData, Obj, FNiagaraToTextExporter::ExportNiagaraAssetToText(Obj), GetNiagaraExportDir(), TEXT("_ReadableNiagara.md"));
+			const FString Saved = SaveAssetDocument(AssetData, Obj, FNiagaraToTextExporter::ExportNiagaraAssetToText(Obj), NiagaraDir, TEXT("_ReadableNiagara.md"));
 			if (Saved.IsEmpty()) return EExportResult::Failed;
 			OutSavedPath = Saved;
 			return EExportResult::Success;
@@ -172,7 +185,7 @@ namespace ReadAllandExplainsExportImpl
 				AssetData,
 				Obj,
 				FCommonAssetToTextExporter::ExportAssetToText(Obj),
-				GetCommonAssetExportDir(Obj),
+				CommonDir,
 				FCommonAssetToTextExporter::GetFileSuffix(Obj));
 			if (Saved.IsEmpty()) return EExportResult::Failed;
 			OutSavedPath = Saved;
@@ -233,13 +246,13 @@ struct FBatchExportResult
 	TArray<FString> SavedPaths;
 };
 
-static FBatchExportResult ExportAssetDataList(const TArray<FAssetData>& AssetList)
+static FBatchExportResult ExportAssetDataList(const TArray<FAssetData>& AssetList, const FString& ExportRootOverride = FString())
 {
 	FBatchExportResult R;
 	for (const FAssetData& AssetData : AssetList)
 	{
 		FString SavedPath;
-		const ReadAllandExplainsExportImpl::EExportResult Result = ReadAllandExplainsExportImpl::ExportOneAsset(AssetData, SavedPath);
+		const ReadAllandExplainsExportImpl::EExportResult Result = ReadAllandExplainsExportImpl::ExportOneAsset(AssetData, SavedPath, ExportRootOverride);
 		switch (Result)
 		{
 		case ReadAllandExplainsExportImpl::EExportResult::Success:
@@ -259,12 +272,137 @@ static FBatchExportResult ExportAssetDataList(const TArray<FAssetData>& AssetLis
 	}
 	if (R.ExportedAssets.Num() > 0)
 	{
+		const FString IndexDir = ExportRootOverride.IsEmpty() ? GetExportRootDir() : ExportRootOverride;
 		const FString IndexText = FAssetInsightExporter::BuildBatchIndex(R.ExportedAssets, R.SavedPaths);
-		SaveText(IndexText, GetExportRootDir(), TEXT("index"), TEXT(".md"));
+		SaveText(IndexText, IndexDir, TEXT("index"), TEXT(".md"));
 		const FString IndexJson = FAssetInsightExporter::BuildBatchIndexJson(R.ExportedAssets, R.SavedPaths);
-		SaveText(IndexJson, GetExportRootDir(), TEXT("index"), TEXT(".json"));
+		SaveText(IndexJson, IndexDir, TEXT("index"), TEXT(".json"));
 	}
 	return R;
+}
+
+static TArray<FAssetData> CollectContextPackAssets(const TArray<FAssetData>& Roots, const int32 MaxDepth)
+{
+	FAssetRegistryModule& Module = FModuleManager::LoadModuleChecked<FAssetRegistryModule>(TEXT("AssetRegistry"));
+	IAssetRegistry& Registry = Module.Get();
+	TArray<FAssetData> Result;
+	TArray<TPair<FAssetData, int32>> Queue;
+	TSet<FString> SeenObjectPaths;
+
+	for (const FAssetData& Root : Roots)
+	{
+		const FString ObjectPath = Root.GetObjectPathString();
+		if (!Root.IsValid() || SeenObjectPaths.Contains(ObjectPath)) continue;
+		SeenObjectPaths.Add(ObjectPath);
+		Result.Add(Root);
+		Queue.Emplace(Root, 0);
+	}
+
+	for (int32 QueueIndex = 0; QueueIndex < Queue.Num(); ++QueueIndex)
+	{
+		const FAssetData& Current = Queue[QueueIndex].Key;
+		const int32 CurrentDepth = Queue[QueueIndex].Value;
+		if (CurrentDepth >= MaxDepth) continue;
+
+		TArray<FName> Dependencies;
+		Registry.GetDependencies(Current.PackageName, Dependencies, UE::AssetRegistry::EDependencyCategory::Package);
+		Dependencies.Sort(FNameLexicalLess());
+		for (const FName Dependency : Dependencies)
+		{
+			if (!Dependency.ToString().StartsWith(TEXT("/Game/"))) continue;
+			TArray<FAssetData> DependencyAssets;
+			Registry.GetAssetsByPackageName(Dependency, DependencyAssets);
+			DependencyAssets.Sort([](const FAssetData& A, const FAssetData& B)
+			{
+				return A.GetObjectPathString() < B.GetObjectPathString();
+			});
+			for (const FAssetData& DependencyAsset : DependencyAssets)
+			{
+				if (!IsSupportedAssetData(DependencyAsset)) continue;
+				const FString ObjectPath = DependencyAsset.GetObjectPathString();
+				if (SeenObjectPaths.Contains(ObjectPath)) continue;
+				SeenObjectPaths.Add(ObjectPath);
+				Result.Add(DependencyAsset);
+				Queue.Emplace(DependencyAsset, CurrentDepth + 1);
+			}
+		}
+	}
+
+	return Result;
+}
+
+static FString BuildContextPackManifest(
+	const TArray<FAssetData>& Roots,
+	const FBatchExportResult& Result,
+	const int32 DependencyDepth)
+{
+	TSharedRef<FJsonObject> Root = MakeShared<FJsonObject>();
+	Root->SetNumberField(TEXT("schemaVersion"), 1);
+	Root->SetStringField(TEXT("documentType"), TEXT("ReadAllandExplainsContextPack"));
+	Root->SetStringField(TEXT("createdUtc"), FDateTime::UtcNow().ToIso8601());
+	Root->SetNumberField(TEXT("dependencyDepth"), DependencyDepth);
+	Root->SetNumberField(TEXT("exportedAssetCount"), Result.ExportedAssets.Num());
+	Root->SetNumberField(TEXT("failedCount"), Result.FailedCount);
+	Root->SetNumberField(TEXT("skippedCount"), Result.SkippedCount);
+
+	TArray<TSharedPtr<FJsonValue>> RootValues;
+	for (const FAssetData& RootAsset : Roots)
+	{
+		RootValues.Add(MakeShared<FJsonValueString>(RootAsset.GetObjectPathString()));
+	}
+	Root->SetArrayField(TEXT("rootAssets"), RootValues);
+
+	TArray<TSharedPtr<FJsonValue>> AssetValues;
+	for (int32 Index = 0; Index < Result.ExportedAssets.Num(); ++Index)
+	{
+		TSharedRef<FJsonObject> Asset = MakeShared<FJsonObject>();
+		Asset->SetStringField(TEXT("objectPath"), Result.ExportedAssets[Index].GetObjectPathString());
+		Asset->SetStringField(TEXT("packageName"), Result.ExportedAssets[Index].PackageName.ToString());
+		Asset->SetStringField(TEXT("exportFile"), Result.SavedPaths.IsValidIndex(Index) ? Result.SavedPaths[Index] : FString());
+		AssetValues.Add(MakeShared<FJsonValueObject>(Asset));
+	}
+	Root->SetArrayField(TEXT("assets"), AssetValues);
+
+	FString Output;
+	TSharedRef<TJsonWriter<TCHAR, TPrettyJsonPrintPolicy<TCHAR>>> Writer = TJsonWriterFactory<TCHAR, TPrettyJsonPrintPolicy<TCHAR>>::Create(&Output);
+	FJsonSerializer::Serialize(Root, Writer);
+	return Output;
+}
+
+static FBatchExportResult ExportContextPack(const TArray<FAssetData>& Roots, FString& OutPackDir)
+{
+	const UReadAllandExplainsSettings* Settings = GetDefault<UReadAllandExplainsSettings>();
+	const int32 DependencyDepth = FMath::Clamp(Settings ? Settings->ContextPackDependencyDepth : 2, 0, 4);
+	const FString Timestamp = FDateTime::Now().ToString(TEXT("%Y%m%d_%H%M%S"));
+	OutPackDir = GetExportRootDir() / TEXT("ContextPacks") / (TEXT("ContextPack_") + Timestamp);
+
+	const TArray<FAssetData> Assets = CollectContextPackAssets(Roots, DependencyDepth);
+	FBatchExportResult Result = ExportAssetDataList(Assets, OutPackDir);
+	SaveText(BuildContextPackManifest(Roots, Result, DependencyDepth), OutPackDir, TEXT("context-pack"), TEXT(".json"));
+
+	FString Readme;
+	Readme += TEXT("# ReadAllandExplains Context Pack\n\n");
+	Readme += FString::Printf(TEXT("- 根资产：%d\n- 项目依赖递归层级：%d\n- 成功导出：%d\n- 失败：%d\n- 跳过：%d\n\n"),
+		Roots.Num(), DependencyDepth, Result.SuccessCount, Result.FailedCount, Result.SkippedCount);
+	Readme += TEXT("## 使用方式\n\n优先把本目录的 `context-pack.json`、`index.json` 和根资产文档交给 AI；需要分析具体节点、Renderer 或曲线时，再按需读取对应 `.meta.json`。推荐使用配套 ReadAllandExplains Skill 与 MCP，先读摘要、再读取目标片段，避免一次加载完整大文件。\n\n");
+	Readme += TEXT("```text\n请把这个 ReadAllandExplains Context Pack 作为一个整体分析。先解释根资产的视觉目标与执行流程，再沿 index 中的真实依赖检查自定义模块、材质、Renderer 绑定与曲线。不要把同名参数直接当作已连接。\n```\n");
+	SaveText(Readme, OutPackDir, TEXT("README"), TEXT(".md"));
+	return Result;
+}
+
+static void NotifyContextPackResult(const FBatchExportResult& Result, const FString& PackDir)
+{
+	FNotificationInfo Info(FText::Format(
+		LOCTEXT("ContextPackSummary", "AI Context Pack 生成完成：资产 {0}，失败 {1}，跳过 {2}。\n输出目录：{3}"),
+		FText::AsNumber(Result.SuccessCount),
+		FText::AsNumber(Result.FailedCount),
+		FText::AsNumber(Result.SkippedCount),
+		FText::FromString(PackDir)));
+	Info.ExpireDuration = Result.FailedCount > 0 ? 8.0f : 6.0f;
+	Info.Hyperlink = FSimpleDelegate::CreateLambda([PackDir]() { FPlatformProcess::ExploreFolder(*PackDir); });
+	Info.HyperlinkText = LOCTEXT("OpenContextPackDir", "打开 Context Pack");
+	FSlateNotificationManager::Get().AddNotification(Info);
+	if (Result.SuccessCount > 0) FPlatformProcess::ExploreFolder(*PackDir);
 }
 
 static TArray<FAssetData> ResolveConsoleAssets(const TArray<FString>& Args)
@@ -309,8 +447,23 @@ static void ExportAssetsFromConsole(const TArray<FString>& Args)
 		*GetExportRootDir());
 }
 
+static void ExportContextPackFromConsole(const TArray<FString>& Args)
+{
+	const TArray<FAssetData> Roots = ResolveConsoleAssets(Args);
+	if (Roots.IsEmpty())
+	{
+		UE_LOG(LogTemp, Warning, TEXT("ReadAllandExplains.ExportContextPack found no assets. Pass object paths or select assets in Content Browser."));
+		return;
+	}
+	FString PackDir;
+	const FBatchExportResult Result = ExportContextPack(Roots, PackDir);
+	UE_LOG(LogTemp, Display, TEXT("ReadAllandExplains Context Pack finished: success=%d failed=%d skipped=%d output=%s"),
+		Result.SuccessCount, Result.FailedCount, Result.SkippedCount, *PackDir);
+}
+
 static IConsoleObject* ExportAssetsConsoleCommand = nullptr;
 static IConsoleObject* LegacyExportAssetsConsoleCommand = nullptr;
+static IConsoleObject* ExportContextPackConsoleCommand = nullptr;
 
 static void RegisterExportConsoleCommands()
 {
@@ -326,6 +479,11 @@ static void RegisterExportConsoleCommands()
 		Help,
 		FConsoleCommandWithArgsDelegate::CreateStatic(&ExportAssetsFromConsole),
 		ECVF_Default);
+	ExportContextPackConsoleCommand = ConsoleManager.RegisterConsoleCommand(
+		TEXT("ReadAllandExplains.ExportContextPack"),
+		TEXT("Export selected roots plus supported /Game/ dependencies as one AI Context Pack. Usage: ReadAllandExplains.ExportContextPack /Game/Path/Asset.Asset."),
+		FConsoleCommandWithArgsDelegate::CreateStatic(&ExportContextPackFromConsole),
+		ECVF_Default);
 }
 
 static void UnregisterExportConsoleCommands()
@@ -340,6 +498,11 @@ static void UnregisterExportConsoleCommands()
 	{
 		ConsoleManager.UnregisterConsoleObject(LegacyExportAssetsConsoleCommand, false);
 		LegacyExportAssetsConsoleCommand = nullptr;
+	}
+	if (ExportContextPackConsoleCommand)
+	{
+		ConsoleManager.UnregisterConsoleObject(ExportContextPackConsoleCommand, false);
+		ExportContextPackConsoleCommand = nullptr;
 	}
 }
 
@@ -381,6 +544,19 @@ static void ExportAllSelectedToAIDocs()
 
 	const FBatchExportResult R = ExportAssetDataList(SelectedAssets);
 	NotifyBatchResult(R);
+}
+
+static void ExportSelectedAsContextPack()
+{
+	const TArray<FAssetData> SelectedAssets = GetSelectedAssetsFromContentBrowser();
+	if (SelectedAssets.IsEmpty())
+	{
+		NotifyEmpty(LOCTEXT("NoContextPackRootSelected", "请先在内容浏览器中选择 Context Pack 根资产。"));
+		return;
+	}
+	FString PackDir;
+	const FBatchExportResult Result = ExportContextPack(SelectedAssets, PackDir);
+	NotifyContextPackResult(Result, PackDir);
 }
 
 // 批量导出（引用查看器入口）：从 UGraphNodeContextMenuContext 拿到选中的 Reference 节点 → FAssetData → 路由
@@ -454,9 +630,16 @@ void FReadAllandExplainsModule::RegisterMenus()
 			FSlateIcon(),
 			FUIAction(FExecuteAction::CreateStatic(&ExportAllSelectedToAIDocs))
 		);
+		Section.AddMenuEntry(
+			"ExportSelectedAsContextPack",
+			LOCTEXT("ExportSelectedAsContextPack", "生成 AI Context Pack（含项目依赖）"),
+			LOCTEXT("ExportSelectedAsContextPackTooltip", "把内容浏览器选择作为根资产，递归收集 /Game/ 下受支持的项目依赖，生成纯 Markdown/JSON 上下文包和索引。"),
+			FSlateIcon(),
+			FUIAction(FExecuteAction::CreateStatic(&ExportSelectedAsContextPack))
+		);
 	}
 
-	// 内容浏览器右键：唯一入口「导出所有选中为 AI 可读文档」
+	// 内容浏览器右键：导出文档或生成完整 Context Pack
 	if (UToolMenu* AssetContextMenu = UToolMenus::Get()->ExtendMenu("ContentBrowser.AssetContextMenu"))
 	{
 		FToolMenuSection& Section = AssetContextMenu->FindOrAddSection("ReadAllandExplainsAssetActions");
@@ -487,6 +670,13 @@ void FReadAllandExplainsModule::RegisterMenus()
 					LOCTEXT("ExportAllSelectedToAIDocsCtxTooltip", "遍历所有选中的资产：蓝图、完整材质图和 Niagara 源资产；输出到 Saved/ReadAllandExplainsExports。"),
 					FSlateIcon(),
 					FUIAction(FExecuteAction::CreateStatic(&ExportAllSelectedToAIDocs))
+				);
+				InSection.AddMenuEntry(
+					"ExportSelectedAsContextPack",
+					LOCTEXT("ExportSelectedAsContextPack_CB", "生成 AI Context Pack（含项目依赖）"),
+					LOCTEXT("ExportSelectedAsContextPackCtxTooltip", "递归收集 /Game/ 下受支持依赖并生成独立 Context Pack；递归层级可在 Editor Preferences > Plugins > ReadAllandExplains 设置。"),
+					FSlateIcon(),
+					FUIAction(FExecuteAction::CreateStatic(&ExportSelectedAsContextPack))
 				);
 			})
 		);

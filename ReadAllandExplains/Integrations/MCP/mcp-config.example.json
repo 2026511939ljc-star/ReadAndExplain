@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "readallandexplains": {
+      "command": "python",
+      "args": [
+        "C:/path/to/ReadAllandExplains/Integrations/MCP/readallandexplains_mcp.py",
+        "--root",
+        "C:/path/to/YourProject/Saved/ReadAllandExplainsExports"
+      ]
+    }
+  }
+}

@@ -180,18 +180,19 @@ namespace ReadAllDocumentIRImpl
 		if (!Document.NiagaraCurves.IsEmpty())
 		{
 			Out += TEXT("### Curves\n\n");
-			Out += TEXT("| 曲线对象 | 类型 | 通道 | Keys | 时间范围 | 外部资产 |\n");
-			Out += TEXT("|----------|------|------|-----:|----------|----------|\n");
+			Out += TEXT("> 已按完整 Key、插值、切线、外推与曲线配置生成稳定指纹；同形副本合并后通过 `usedBy` 保留全部来源。\n\n");
+			Out += TEXT("| 曲线 ID | 类型 | 通道 | Keys | 时间范围 | 使用位置 | 外部资产 |\n");
+			Out += TEXT("|-----------|------|------|-----:|----------|---------:|----------|\n");
 			for (const FReadAllNiagaraCurveIR& Curve : Document.NiagaraCurves)
 			{
 				int32 KeyCount = 0;
 				for (const FReadAllNiagaraCurveChannelIR& Channel : Curve.Channels) KeyCount += Channel.Keys.Num();
-				Out += TEXT("| ") + FAssetTextSnapshot::MarkdownCell(Curve.ObjectPath)
+				Out += TEXT("| ") + FAssetTextSnapshot::MarkdownCell(Curve.Id)
 					+ TEXT(" | ") + FAssetTextSnapshot::MarkdownCell(Curve.ClassPath)
-					+ FString::Printf(TEXT(" | %d | %d | %g - %g | "), Curve.Channels.Num(), KeyCount, Curve.MinTime, Curve.MaxTime)
+					+ FString::Printf(TEXT(" | %d | %d | %g - %g | %d | "), Curve.Channels.Num(), KeyCount, Curve.MinTime, Curve.MaxTime, Curve.UsedBy.Num())
 					+ FAssetTextSnapshot::MarkdownCell(Curve.CurveAssetPath) + TEXT(" |\n");
 			}
-			Out += TEXT("\n- 每个通道的原始 Key、插值、切线与外推模式已写入 `.meta.json`。\n\n");
+			Out += TEXT("\n- 原始 Key、插值、切线和所有 `usedBy` 已写入 `.meta.json`，可由配套 Skill/MCP 按需读取。\n\n");
 		}
 	}
 
@@ -307,11 +308,14 @@ namespace ReadAllDocumentIRImpl
 	{
 		TSharedRef<FJsonObject> Json = MakeShared<FJsonObject>();
 		Json->SetStringField(TEXT("id"), Curve.Id);
+		Json->SetStringField(TEXT("fingerprint"), Curve.Fingerprint);
 		Json->SetStringField(TEXT("objectPath"), Curve.ObjectPath);
 		Json->SetStringField(TEXT("classPath"), Curve.ClassPath);
 		Json->SetStringField(TEXT("ownerGraphId"), Curve.OwnerGraphId);
 		Json->SetStringField(TEXT("curveAssetPath"), Curve.CurveAssetPath);
 		Json->SetStringField(TEXT("exposedName"), Curve.ExposedName);
+		Json->SetArrayField(TEXT("usedBy"), MakeStringArray(Curve.UsedBy));
+		Json->SetNumberField(TEXT("usageCount"), Curve.UsedBy.Num());
 		Json->SetBoolField(TEXT("useLUT"), Curve.bUseLUT);
 		Json->SetBoolField(TEXT("exposeCurve"), Curve.bExposeCurve);
 		Json->SetNumberField(TEXT("minTime"), Curve.MinTime);

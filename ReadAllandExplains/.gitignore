@@ -8,3 +8,5 @@ Saved/
 *.exp
 *.lib
 *.zip
+__pycache__/
+*.py[cod]

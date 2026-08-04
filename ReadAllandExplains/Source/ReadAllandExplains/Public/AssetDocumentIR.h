@@ -124,11 +124,13 @@ struct FReadAllNiagaraCurveChannelIR
 struct FReadAllNiagaraCurveIR
 {
 	FString Id;
+	FString Fingerprint;
 	FString ObjectPath;
 	FString ClassPath;
 	FString OwnerGraphId;
 	FString CurveAssetPath;
 	FString ExposedName;
+	TArray<FString> UsedBy;
 	bool bUseLUT = false;
 	bool bExposeCurve = false;
 	float MinTime = 0.0f;
