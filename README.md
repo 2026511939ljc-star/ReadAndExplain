@@ -2,16 +2,19 @@
 
 ReadAllandExplains is an Unreal Engine 5.7 editor plugin that exports selected Unreal assets as compact, AI-readable documents. It preserves useful technical structure while adding artist-friendly summaries, dependency context, feature tags, and ready-to-use AI prompts.
 
-> **Release status:** `4.3.0-preview.1` is a preview release. Test it in a copy of your project before adopting it in production.
+> **Release status:** `4.5.0-preview.1` is a preview release. Test it in a copy of your project before adopting it in production.
 
 ## Features
 
 - Exports multiple selected assets in one operation.
+- Generates an AI Context Pack from selected root assets and supported `/Game/` dependencies, with a configurable recursion depth from 0 to 4.
 - Integrates with the Content Browser, the Window menu, and Reference Viewer node menus.
 - Produces readable Markdown or text plus optional machine-readable `.meta.json` sidecars.
+- Deduplicates Niagara curves by a stable fingerprint while preserving every source location through `usedBy`.
 - Adds dependencies, referencers, feature tags, artist-oriented explanations, and configurable AI hand-off prompts.
+- Includes a read-only local MCP server and a companion Skill for progressive index-to-summary-to-detail retrieval.
 - Supports compact output for lower token usage and reconstruction-oriented output for maximum graph detail.
-- Provides an editor console command for scripted and unattended export workflows.
+- Provides editor console commands for scripted and unattended asset or Context Pack export workflows.
 - Writes UTF-8 files with a BOM for reliable Chinese text display in Windows editors.
 
 ## Supported assets
@@ -83,6 +86,12 @@ Calling the command without object paths exports the current Content Browser sel
 ReadAllandExplains.ExportAssets
 ```
 
+Export selected roots plus supported project dependencies as one Context Pack:
+
+```text
+ReadAllandExplains.ExportContextPack /Game/Folder/NS_Effect.NS_Effect
+```
+
 Example unattended workflow:
 
 ```powershell
@@ -90,6 +99,14 @@ UnrealEditor-Cmd.exe "D:\Projects\MyProject\MyProject.uproject" -unattended -nop
 ```
 
 `GetTheMeaning.ExportAssets` remains available as a legacy command alias.
+
+### Skill and MCP
+
+- The companion Skill is located at `Skills/readallandexplains/SKILL.md`.
+- The read-only stdio MCP server is located at `Integrations/MCP/readallandexplains_mcp.py`.
+- Start it with Python 3.10+ and pass `--root <YourProject>/Saved/ReadAllandExplainsExports`, or set `READALL_EXPORT_ROOT`.
+- Use `Integrations/MCP/mcp-config.example.json` as a client configuration template.
+- The MCP provides Context Pack discovery, asset search, compact summaries, precise graph/renderer/curve detail, and text search without loading complete exports.
 
 ## Output
 
@@ -132,14 +149,15 @@ Open **Editor Preferences > Plugins > ReadAllandExplains**.
 - **AI Prompt Mode**: `Explain`, `Review`, `Optimize`, `Trace`, or `Custom`.
 - **Custom Prompt**: appended when Custom prompt mode is selected.
 
-## What is new in 4.3.0-preview.1
+## What is new in 4.5.0-preview.1
 
-- Exports Niagara renderer type, materials, source mode, attribute bindings, and editable properties.
-- Preserves original Float, Vector, and Color curve keys, interpolation, tangents, weights, and extrapolation modes.
-- Recursively expands project Niagara modules under `/Game/` with cycle detection, path deduplication, and a maximum depth of four.
-- Adds function reference path, callee graph, selected script version, and enabled state to function-call nodes.
-- Preserves the existing Schema 2 `graphs` structure and `_ReadableNiagara.md` detailed exporter.
-- Validated with a real UE 5.7 Niagara System containing renderer bindings, source curves, and custom project modules.
+- Generates recursive AI Context Packs with manifests, indexes, readable documents, and Schema JSON metadata.
+- Deduplicates Niagara curves by stable fingerprints while preserving complete keys, interpolation, tangents, extrapolation, and all `usedBy` locations.
+- Stops generating optional HTML/SVG browser files; the default Context Pack remains Markdown and JSON only.
+- Adds a dependency-free, read-only stdio MCP server with five progressive retrieval tools.
+- Adds a companion UE asset analysis Skill for Blueprint, Material, Custom HLSL, Niagara, renderer binding, dependency, graph, and curve interpretation.
+- Preserves the existing renderer details, recursive project Niagara module graphs, Schema 2 `graphs`, and `_ReadableNiagara.md` output.
+- Validated with Unreal Engine 5.7 / Win64, a real Niagara Context Pack, MCP discovery, asset indexing, and precise curve retrieval.
 
 
 ---
@@ -148,16 +166,19 @@ Open **Editor Preferences > Plugins > ReadAllandExplains**.
 
 ReadAllandExplains 是一个适用于 Unreal Engine 5.7 的编辑器插件，可将选中的 UE 资产导出成结构紧凑、方便 AI 阅读的文档。它在保留重要技术结构的同时，还会补充面向美术人员的概览、依赖关系、特征标签以及可直接交给 AI 使用的提示词。
 
-> **发布状态：** `4.3.0-preview.1` 是预览版本。用于正式项目之前，建议先在项目副本中测试。
+> **发布状态：** `4.5.0-preview.1` 是预览版本。用于正式项目之前，建议先在项目副本中测试。
 
 ## 主要功能
 
 - 一次批量导出多个选中的资产。
+- 以所选资产为根生成 AI Context Pack，并按 0 至 4 层递归收集 `/Game/` 下受支持的项目依赖。
 - 集成内容浏览器、Window 主菜单和 Reference Viewer 节点右键菜单。
 - 生成易读的 Markdown／文本，并可同时生成机器可读的 `.meta.json` 元数据文件。
+- Niagara 曲线按稳定指纹去重，同时通过 `usedBy` 保留所有来源位置。
 - 输出依赖项、引用项、特征标签、美术向说明和可配置的 AI 交接提示词。
+- 附带只读本地 MCP 与配套 Skill，以“索引 → 摘要 → 目标片段”方式渐进读取。
 - 提供节省 Token 的精简模式，以及尽量保留图表信息的重建模式。
-- 提供编辑器控制台命令，支持脚本化和无人值守导出。
+- 提供普通资产和 Context Pack 的编辑器控制台命令，支持脚本化和无人值守导出。
 - 使用带 BOM 的 UTF-8 保存文件，保证中文在 Windows 常用编辑器中正确显示。
 
 ## 支持的资产
@@ -229,6 +250,12 @@ ReadAllandExplains.ExportAssets /Game/Folder/M_Asset.M_Asset /Game/Folder/BP_Too
 ReadAllandExplains.ExportAssets
 ```
 
+把所选根资产及其受支持的项目依赖导出为一个 Context Pack：
+
+```text
+ReadAllandExplains.ExportContextPack /Game/Folder/NS_Effect.NS_Effect
+```
+
 无人值守运行示例：
 
 ```powershell
@@ -236,6 +263,14 @@ UnrealEditor-Cmd.exe "D:\Projects\MyProject\MyProject.uproject" -unattended -nop
 ```
 
 旧命令别名 `GetTheMeaning.ExportAssets` 仍然保留。
+
+### Skill 与 MCP
+
+- 配套 Skill 位于 `Skills/readallandexplains/SKILL.md`。
+- 只读 stdio MCP 位于 `Integrations/MCP/readallandexplains_mcp.py`。
+- 使用 Python 3.10+ 启动并传入 `--root <你的项目>/Saved/ReadAllandExplainsExports`，也可设置 `READALL_EXPORT_ROOT`。
+- 客户端配置可参考 `Integrations/MCP/mcp-config.example.json`。
+- MCP 支持 Context Pack 发现、资产搜索、紧凑摘要、Graph／Renderer／曲线精确读取和文本检索，无需一次加载完整导出文件。
 
 ## 输出目录
 
@@ -278,11 +313,12 @@ CurveTables/
 - **AI Prompt Mode**：可选 `Explain`、`Review`、`Optimize`、`Trace` 或 `Custom`。
 - **Custom Prompt**：选择 Custom 模式时追加的自定义提示词。
 
-## 4.3.0-preview.1 更新内容
+## 4.5.0-preview.1 更新内容
 
-- 输出 Niagara Renderer 类型、材质、Source Mode、属性绑定和可编辑配置。
-- 保留 Float、Vector、Color 曲线的原始 Key、插值、切线、权重及前后外推模式。
-- 递归展开 `/Game/` 下项目自定义 Niagara 模块，带循环检测、路径去重和最大深度 4 限制。
-- 函数调用节点新增引用路径、被调图、选中脚本版本和启用状态。
-- 保留现有 Schema 2 `graphs` 结构与 `_ReadableNiagara.md` 详细导出器兼容。
-- 已使用 UE 5.7 真实 Niagara System 验证 Renderer 绑定、源曲线和项目自定义模块读取。
+- 生成递归 AI Context Pack，包含清单、索引、可读文档和 Schema JSON 元数据。
+- Niagara 曲线按稳定指纹去重，同时保留完整 Key、插值、切线、外推和全部 `usedBy` 来源。
+- 停止生成可选 HTML/SVG 浏览器文件，Context Pack 默认只保留 Markdown 与 JSON。
+- 新增无第三方依赖、纯只读的 stdio MCP，提供 5 个渐进式查询工具。
+- 新增配套 UE 资产分析 Skill，用于蓝图、材质、Custom HLSL、Niagara、Renderer 绑定、依赖、节点图和曲线解释。
+- 继续保留 Renderer 明细、项目 Niagara 模块递归图、Schema 2 `graphs` 与 `_ReadableNiagara.md` 兼容。
+- 已通过 Unreal Engine 5.7 / Win64、真实 Niagara Context Pack、MCP 自动发现、资产索引和指定曲线读取验证。

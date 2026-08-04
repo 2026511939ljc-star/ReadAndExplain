@@ -47,6 +47,10 @@ public:
 	UPROPERTY(EditAnywhere, Config, Category = "Export", meta = (DisplayName = "写入 asset.meta.json"))
 	bool bWriteMetadataJson = true;
 
+	/** Context Pack only follows project assets under /Game/. Zero exports selected roots only. */
+	UPROPERTY(EditAnywhere, Config, Category = "Context Pack", meta = (DisplayName = "项目依赖递归层级", ClampMin = "0", ClampMax = "4", UIMin = "0", UIMax = "4"))
+	int32 ContextPackDependencyDepth = 2;
+
 	/** Controls the AI hand-off text appended to each exported document. */
 	UPROPERTY(EditAnywhere, Config, Category = "AI", meta = (DisplayName = "AI 提示词模式"))
 	EReadAllPromptMode PromptMode = EReadAllPromptMode::Explain;
