@@ -1,0 +1,17 @@
+{
+  "name": "readallandexplains-marketplace",
+  "description": "ReadAllandExplains CodeBuddy plugin releases",
+  "owner": {
+    "name": "Aoife"
+  },
+  "plugins": [
+    {
+      "name": "readallandexplains",
+      "source": ".",
+      "description": "Progressive Unreal Engine analysis with permission-gated SyncLive Lite targeted snapshots.",
+      "version": "4.6.0-preview.3",
+      "category": "game-development",
+      "repository": "https://github.com/2026511939ljc-star/ReadAndExplain"
+    }
+  ]
+}

@@ -1,15 +1,13 @@
-# Debug symbols
-*.pdb
-
-# Python cache
-__pycache__/
-
-# IDE
+Binaries/
+Intermediate/
+Saved/
 .vs/
-.vscode/
-*.suo
-*.user
-
-# OS
-Thumbs.db
-.DS_Store
+*.sln
+*.pdb
+*.obj
+*.exp
+*.lib
+*.zip
+__pycache__/
+*.py[cod]
+.plugins-cache.json

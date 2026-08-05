@@ -1,0 +1,14 @@
+{
+  "name": "readallandexplains",
+  "version": "4.6.0-preview.3",
+  "description": "ReadAllandExplains for CodeBuddy: progressive UE asset analysis with permission-gated, bounded SyncLive Lite targeted snapshots.",
+  "description_en": "Progressive Unreal Engine asset analysis with permission-gated SyncLive Lite and evidence-backed Context Packs.",
+  "author": {
+    "name": "Aoife"
+  },
+  "homepage": "https://github.com/2026511939ljc-star/ReadAndExplain",
+  "repository": "https://github.com/2026511939ljc-star/ReadAndExplain",
+  "keywords": ["unreal-engine", "technical-art", "blueprint", "material", "niagara", "mcp", "context-pack"],
+  "category": "game-development",
+  "mcpServers": "./.mcp.json"
+}
