@@ -17,6 +17,7 @@
 #include "Engine/Blueprint.h"
 #include "Engine/CurveTable.h"
 #include "Engine/DataTable.h"
+#include "Engine/DataAsset.h"
 #include "Engine/StaticMesh.h"
 #include "Engine/Texture.h"
 #include "Materials/MaterialInterface.h"
@@ -210,7 +211,9 @@ namespace ReadAllandExplainsExportImpl
 			|| AssetData.IsInstanceOf(UStaticMesh::StaticClass())
 			|| AssetData.IsInstanceOf(UTexture::StaticClass())
 			|| AssetData.IsInstanceOf(UDataTable::StaticClass())
-			|| AssetData.IsInstanceOf(UCurveTable::StaticClass());
+			|| AssetData.IsInstanceOf(UCurveTable::StaticClass())
+			|| AssetData.IsInstanceOf(UEnum::StaticClass())
+			|| AssetData.IsInstanceOf(UDataAsset::StaticClass());
 	}
 
 	static TArray<FAssetData> GetSelectedAssetsFromContentBrowser()

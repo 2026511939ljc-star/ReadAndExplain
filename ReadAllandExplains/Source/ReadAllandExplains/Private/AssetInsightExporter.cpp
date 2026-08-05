@@ -13,6 +13,7 @@
 #include "Engine/Blueprint.h"
 #include "Engine/CurveTable.h"
 #include "Engine/DataTable.h"
+#include "Engine/DataAsset.h"
 #include "Engine/StaticMesh.h"
 #include "Engine/Texture.h"
 #include "Curves/RichCurve.h"
@@ -1204,11 +1205,14 @@ void FAssetInsightExporter::CollectParameterClues(UObject* Asset, TArray<FReadAl
 	{
 		if (const UClass* GeneratedClass = Blueprint->GeneratedClass)
 		{
+			const UObject* CDO = GeneratedClass->GetDefaultObject();
 			for (TFieldIterator<FProperty> It(GeneratedClass, EFieldIteratorFlags::ExcludeSuper); It; ++It)
 			{
 				const FProperty* Property = *It;
 				if (!Property || Property->HasAnyPropertyFlags(CPF_Transient | CPF_Deprecated)) continue;
-				OutClues.Add({Property->GetName(), TEXT("蓝图变量"), Property->GetCPPType()});
+				FString PropValue = ExportReflectedValue(Property, CDO);
+				if (PropValue.IsEmpty()) PropValue = Property->GetCPPType();
+				OutClues.Add({Property->GetName(), TEXT("蓝图变量"), PropValue});
 			}
 		}
 	}
@@ -1279,6 +1283,24 @@ void FAssetInsightExporter::CollectParameterClues(UObject* Asset, TArray<FReadAl
 		for (const TPair<FName, FRealCurve*>& Pair : CurveTable->GetRowMap())
 		{
 			OutClues.Add({Pair.Key.ToString(), TEXT("曲线名称"), Pair.Value ? FString::Printf(TEXT("%d keys"), Pair.Value->GetNumKeys()) : TEXT("<空>")});
+		}
+	}
+	else if (const UEnum* Enum = Cast<UEnum>(Asset))
+	{
+		for (int32 Idx = 0; Idx < Enum->NumEnums(); ++Idx)
+		{
+			OutClues.Add({Enum->GetDisplayNameTextByIndex(Idx).ToString(), TEXT("枚举条目"), FString::Printf(TEXT("%d"), Enum->GetValueByIndex(Idx))});
+		}
+	}
+	else if (const UDataAsset* DataAsset = Cast<UDataAsset>(Asset))
+	{
+		for (TFieldIterator<FProperty> It(DataAsset->GetClass(), EFieldIteratorFlags::ExcludeSuper); It; ++It)
+		{
+			const FProperty* Property = *It;
+			if (!Property || Property->HasAnyPropertyFlags(CPF_Transient | CPF_Deprecated)) continue;
+			FString PropValue = ExportReflectedValue(Property, DataAsset);
+			if (PropValue.IsEmpty()) PropValue = TEXT("<无默认值>");
+			OutClues.Add({Property->GetName(), TEXT("DataAsset 属性"), PropValue});
 		}
 	}
 

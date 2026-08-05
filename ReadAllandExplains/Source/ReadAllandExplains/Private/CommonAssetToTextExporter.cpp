@@ -12,6 +12,7 @@
 #include "Materials/MaterialInterface.h"
 #include "PhysicsEngine/BodySetup.h"
 #include "UObject/UnrealType.h"
+#include "Engine/DataAsset.h"
 
 namespace CommonAssetTextImpl
 {
@@ -185,11 +186,46 @@ namespace CommonAssetTextImpl
 		}
 		return Out;
 	}
+
+	static FString ExportEnum(UEnum* Enum)
+	{
+		FString Out;
+		Out += TEXT("# Enum Export\n\n");
+		Out += TEXT("- Name: `") + Enum->GetName() + TEXT("`\n");
+		Out += TEXT("- ObjectPath: `") + Enum->GetPathName() + TEXT("`\n");
+		Out += FString::Printf(TEXT("- EntryCount: %d\n\n"), Enum->NumEnums());
+		Out += TEXT("| Index | Name | Value |\n");
+		Out += TEXT("|------:|------|------:|\n");
+		for (int32 Idx = 0; Idx < Enum->NumEnums(); ++Idx)
+		{
+			Out += FString::Printf(
+				TEXT("| %d | %s | %d |\n"),
+				Idx,
+				*FAssetTextSnapshot::MarkdownCell(Enum->GetDisplayNameTextByIndex(Idx).ToString()),
+				Enum->GetValueByIndex(Idx));
+		}
+		if (Enum->NumEnums() == 0)
+		{
+			Out += TEXT("| 0 | (none) | |\n");
+		}
+		return Out;
+	}
+
+	static FString ExportDataAsset(UDataAsset* DataAsset)
+	{
+		FString Out;
+		Out += TEXT("# Data Asset Export\n\n");
+		Out += TEXT("- Name: `") + DataAsset->GetName() + TEXT("`\n");
+		Out += TEXT("- ObjectPath: `") + DataAsset->GetPathName() + TEXT("`\n");
+		Out += TEXT("- Class: `") + DataAsset->GetClass()->GetPathName() + TEXT("`\n\n");
+		Out += FAssetTextSnapshot::ExportObjectProperties(DataAsset, TEXT("## Properties"));
+		return Out;
+	}
 }
 
 bool FCommonAssetToTextExporter::Supports(const UObject* Asset)
 {
-	return Asset && (Asset->IsA<UStaticMesh>() || Asset->IsA<UTexture>() || Asset->IsA<UDataTable>() || Asset->IsA<UCurveTable>());
+	return Asset && (Asset->IsA<UStaticMesh>() || Asset->IsA<UTexture>() || Asset->IsA<UDataTable>() || Asset->IsA<UCurveTable>() || Asset->IsA<UEnum>() || Asset->IsA<UDataAsset>());
 }
 
 FString FCommonAssetToTextExporter::ExportAssetToText(UObject* Asset)
@@ -198,6 +234,8 @@ FString FCommonAssetToTextExporter::ExportAssetToText(UObject* Asset)
 	if (UTexture* Texture = Cast<UTexture>(Asset)) return CommonAssetTextImpl::ExportTexture(Texture);
 	if (UDataTable* DataTable = Cast<UDataTable>(Asset)) return CommonAssetTextImpl::ExportDataTable(DataTable);
 	if (UCurveTable* CurveTable = Cast<UCurveTable>(Asset)) return CommonAssetTextImpl::ExportCurveTable(CurveTable);
+	if (UEnum* Enum = Cast<UEnum>(Asset)) return CommonAssetTextImpl::ExportEnum(Enum);
+	if (UDataAsset* DataAsset = Cast<UDataAsset>(Asset)) return CommonAssetTextImpl::ExportDataAsset(DataAsset);
 	return FString();
 }
 
@@ -207,6 +245,8 @@ FString FCommonAssetToTextExporter::GetExportFolderName(const UObject* Asset)
 	if (Asset && Asset->IsA<UTexture>()) return TEXT("Textures");
 	if (Asset && Asset->IsA<UDataTable>()) return TEXT("DataTables");
 	if (Asset && Asset->IsA<UCurveTable>()) return TEXT("CurveTables");
+	if (Asset && Asset->IsA<UEnum>()) return TEXT("Enums");
+	if (Asset && Asset->IsA<UDataAsset>()) return TEXT("DataAssets");
 	return TEXT("OtherAssets");
 }
 
@@ -216,5 +256,7 @@ FString FCommonAssetToTextExporter::GetFileSuffix(const UObject* Asset)
 	if (Asset && Asset->IsA<UTexture>()) return TEXT("_ReadableTexture.md");
 	if (Asset && Asset->IsA<UDataTable>()) return TEXT("_ReadableDataTable.md");
 	if (Asset && Asset->IsA<UCurveTable>()) return TEXT("_ReadableCurveTable.md");
+	if (Asset && Asset->IsA<UEnum>()) return TEXT("_ReadableEnum.md");
+	if (Asset && Asset->IsA<UDataAsset>()) return TEXT("_ReadableDataAsset.md");
 	return TEXT("_ReadableAsset.md");
 }
