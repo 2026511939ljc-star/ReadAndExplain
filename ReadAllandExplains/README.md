@@ -19,6 +19,8 @@ ReadAllandExplains 将 Blueprint、Material、Niagara 等资产导出为便于�
 
 - **统一 Schema 2 图 IR**：材质节点/Pin/Link 与蓝图执行流进入统一图中间表示，Markdown 与 JSON 共用同一 IR 生成。
 - **Niagara 深度导出**：Renderer 明细、曲线原始 Key/插值/切线/外推、项目自定义模块递归图（深度 4、循环去重），曲线指纹去重并保留 `usedBy` 来源。
+- **材质 Custom HLSL**：Custom 节点的 HLSL 代码体、输出类型和自定义输入引脚完整导出为伪 HLSL `CustomHLSL("type", "code", Input("name", value), ...)`，原始 Code 字段同时通过反射保留在 `.meta.json`。
+- **蓝图 CDO 参数值**：蓝图变量导出实际 Class Default Object 默认值，不再只导出类型名。
 - **AI Context Pack**：以根资产递归收集 `/Game/` 下受支持依赖，默认深度 2（可配 0–4），生成独立上下文目录含 README、索引和分类资产文档。
 - **渐进式 MCP 查询**：只读 stdio MCP 提供 Context Pack 列表、资产搜索、摘要、Graph/Renderer/曲线详情与文本检索，支持 `coverage` 依赖缺口视图。
 - **SyncLive Lite**：用户批准补充计划后，MCP 可向正在运行的 UE 编辑器提交 1–5 个 `/Game/` 资产的定向静态补快照请求，原子落盘、状态机管理、PIE 暂停。
@@ -34,6 +36,8 @@ ReadAllandExplains 将 Blueprint、Material、Niagara 等资产导出为便于�
 | Material / Material Instance | `_ReadableMaterial.md` + `.meta.json` | 节点图 IR + 参数 |
 | Material Function | `_ReadableMaterial.md` + `.meta.json` | 复用材质导出器 |
 | Niagara System / Emitter / Script | `_ReadableNiagara.md` + `.meta.json` | Renderer + 曲线 + 模块递归图 |
+| Enum | `_ReadableEnum.md` + `.meta.json` | 枚举条目名称与值 |
+| DataAsset | `_ReadableDataAsset.md` + `.meta.json` | 实例属性全量反射导出 |
 
 **暂不支持**：Texture2D/TextureCube（二进制像素数据）、AnimBP 状态机、缩略图缓存、反向导入器。
 
@@ -114,6 +118,8 @@ ReadAllandExplains exports Blueprint, Material, and Niagara assets as human-read
 
 - **Unified Schema 2 Graph IR**: Material nodes/Pins/Links and Blueprint execution flow enter a unified graph intermediate representation; Markdown and JSON share the same IR.
 - **Deep Niagara Export**: Renderer details, curve raw Key/interpolation/tangent/extrapolation, project custom module recursive graphs (depth 4, cycle-deduplicated), curve fingerprint deduplication with `usedBy` provenance.
+- **Material Custom HLSL**: Custom node HLSL code body, output type, and custom input pins exported as pseudo-HLSL `CustomHLSL("type", "code", Input("name", value), ...)`; raw Code field also retained in `.meta.json` via reflection.
+- **Blueprint CDO Parameter Values**: Blueprint variables export actual Class Default Object default values, not just type names.
 - **AI Context Pack**: Recursively collects supported `/Game/` dependencies from a root asset (default depth 2, configurable 0–4), generating a standalone context directory with README, index, and categorized asset documents.
 - **Progressive MCP Query**: Read-only stdio MCP provides Context Pack listing, asset search, summaries, Graph/Renderer/curve details, and text search, with a `coverage` dependency gap view.
 - **SyncLive Lite**: After user approval, MCP can submit targeted static snapshot requests (1–5 `/Game/` assets) to a running UE editor, with atomic file writes, state machine management, and PIE pause.
@@ -129,6 +135,8 @@ ReadAllandExplains exports Blueprint, Material, and Niagara assets as human-read
 | Material / Material Instance | `_ReadableMaterial.md` + `.meta.json` | Node graph IR + parameters |
 | Material Function | `_ReadableMaterial.md` + `.meta.json` | Reuses material exporter |
 | Niagara System / Emitter / Script | `_ReadableNiagara.md` + `.meta.json` | Renderer + curves + module recursive graph |
+| Enum | `_ReadableEnum.md` + `.meta.json` | Entry names and values |
+| DataAsset | `_ReadableDataAsset.md` + `.meta.json` | Full instance property reflection export |
 
 **Not yet supported**: Texture2D/TextureCube (binary pixel data), AnimBP state machines, thumbnail caching, reverse importer.
 
