@@ -16,14 +16,14 @@ ReadAllandExplains 是 UE 技术美术资产的 AI Context Compiler。核心流�
 ## 当前基线
 
 - 开发分支：`iteration/vnext`
-- 当前检查点提交：`73825d9`
-- 远端回滚标签：`backup/task4-checkpoint-20260805-73825d9`
-- 插件版本元数据：`4.7.0`（发布候选）
-- 目标版本：`4.7.0`
+- 最终候选提交：`08f5b9248c4051486ab151b0c32d9e6c847a05ea`
+- 候选回滚标签：`backup/v4.7.0-rc-20260805-08f5b92`
+- Task 4 检查点：`backup/task4-checkpoint-20260805-73825d9`
+- 插件版本元数据：`4.7.0`
 - UE 目标环境：UE `5.7`，Win64
-- 发布分支：`main`，不得在开发未验收时直接更新
+- 发布分支：`main`，仅在全部门禁通过且获得用户许可后更新
 
-需要回滚时，优先从标签 `backup/task4-checkpoint-20260805-73825d9` 创建恢复分支，不重写已发布历史。
+需要回滚时，优先从候选标签或 Task 4 检查点创建恢复分支，不重写已发布历史。
 
 ## 已完成事项
 
@@ -85,7 +85,7 @@ Task 4 的核心是测试基础设施，不是 MCP 或 Skill 功能扩展。
 
 ## 当前执行状态
 
-`2026-08-05`：用户已授权开始 4.7 开发，开发基于检查点 `73825d9`，当前代码尚未提交或发布。
+`2026-08-05`：用户已授权完成编译与 4.7 正式发布。开发候选已提交为 `08f5b92` 并推送至 `origin/iteration/vnext`，正式发布流程正在执行。
 
 已完成：
 
@@ -102,9 +102,10 @@ Task 4 的核心是测试基础设施，不是 MCP 或 Skill 功能扩展。
 - MCP 契约测试：`32/32 PASS`。
 - UE 5.7 隔离 CompileHost：最终 4.7 候选编译与 DLL 链接成功。
 - 历史真实 Blueprint Context Pack 与旧 Golden baseline：`172/172` 文件一致，新增、修改、缺失均为 `0`。
-- 新 DLL 已部署到 Trans；实际加载模块 SHA-256 为 `B7D94C6BA62CDB3BFD393037C51799C601D30F3D1569A70773AA8DF645C7D264`。
+- 最终 DLL 已部署到 Trans；实际加载模块 SHA-256 为 `B68EEB4B05AC02B8149122763E7D45DB0E92A8B0FD52736ECE75DCACA686EB5B`。
 - 五类真实资产各连续导出两次，共 10 份正式完整 Pack；资产正文和 Metadata 均无非预期变化。
-- 受管 Golden baseline 已批准新增 `attemptedAssetCount`、`metadataFile` 与 Index Metadata 列；10 份报告重新比较均为 `10/10 PASS`、`exitCode=0`、`failed=0`。
+- 10 份最终报告均为 `ok=true`、`exitCode=0`、`failed=0`，新增、修改、缺失文件均为 `0`；Git HEAD 均为 `08f5b92`、`dirty=false`，加载 DLL 哈希一致。
+- 受管 Golden baseline 已批准新增 `attemptedAssetCount`、`metadataFile` 与 Index Metadata 列。
 - `git diff --check`：通过。
 
-当前代码、开发记忆和本地受管 baseline 尚未提交；正式版本号、Release Notes、安装包、`main`、4.7 标签与 GitHub Release 仍需用户单独许可。
+当前仅开发记忆的最终状态更新尚待提交；正式 ZIP、`main`、`v4.7.0` 标签与 GitHub Release 正在按用户许可执行。
