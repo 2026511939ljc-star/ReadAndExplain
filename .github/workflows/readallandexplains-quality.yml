@@ -1,0 +1,45 @@
+name: ReadAllandExplains Quality Gate
+
+on:
+  push:
+    branches:
+      - main
+      - iteration/vnext
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: readallandexplains-quality-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  python-regression:
+    runs-on: windows-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Resolve plugin root
+        id: layout
+        shell: pwsh
+        run: |
+          if (Test-Path "ReadAllandExplains/Tests") {
+            "plugin_root=ReadAllandExplains" >> $env:GITHUB_OUTPUT
+          } else {
+            "plugin_root=." >> $env:GITHUB_OUTPUT
+          }
+
+      - name: Run Golden Pack regression tests
+        working-directory: ${{ steps.layout.outputs.plugin_root }}
+        run: python -m unittest discover -s Tests/Golden -p "test_*.py" -v
+
+      - name: Run MCP contract tests
+        working-directory: ${{ steps.layout.outputs.plugin_root }}
+        run: python -m unittest discover -s Tests/MCP -p "test_*.py" -v

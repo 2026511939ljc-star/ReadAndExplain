@@ -10,7 +10,9 @@
 | MCP 源码 | `Integrations/MCP/` | 是 | stdio 查询与 SyncLive Lite 请求通道 |
 | Skill 源码 | `skills/readallandexplains/SKILL.md` | 是 | 唯一可编辑 Skill 源 |
 | CodeBuddy 集成 | `.codebuddy-plugin/`、`.mcp.json`、`commands/`、`CODEBUDDY.md` | 是 | 插件发现、命令和启动配置 |
-| 自动测试 | `Tests/` | 是 | MCP、Skill、版本和管理契约 |
+| 自动测试 | `Tests/` | 是 | MCP、Skill、版本、管理契约与 Golden 比较器 |
+| Golden 运行入口 | `Scripts/RunGoldenPackRegression.ps1` | 是 | 从真实 UE 资产导出并调用 Golden 比较器 |
+| 本地 Golden 数据 | `Tests/Golden/*.local.json`、`Tests/Golden/.baselines/`、`Tests/Golden/.reports/` | 否 | 含项目资产路径、规范化基线和报告，仅本机使用 |
 | 产品文档 | `README.md`、`docs/`、当前及历史 `RELEASE_NOTES_*` | 是 | 当前说明、治理规则和历史记录 |
 | UE 构建产物 | `Binaries/`、`Intermediate/` | 否 | 本机可重新生成，发布包另行构建 |
 | Python/CodeBuddy 缓存 | `__pycache__/`、`.plugins-cache.json` | 否 | 本机状态，不具备可移植性 |

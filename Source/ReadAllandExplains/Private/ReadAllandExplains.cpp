@@ -17,6 +17,7 @@
 #include "Engine/Blueprint.h"
 #include "Engine/CurveTable.h"
 #include "Engine/DataTable.h"
+#include "Engine/DataAsset.h"
 #include "Engine/StaticMesh.h"
 #include "Engine/Texture.h"
 #include "Materials/MaterialInterface.h"
@@ -32,7 +33,9 @@
 #include "Framework/Notifications/NotificationManager.h"
 #include "Widgets/Notifications/SNotificationList.h"
 #include "Misc/FileHelper.h"
+#include "Misc/Guid.h"
 #include "Misc/Paths.h"
+#include "Misc/SecureHash.h"
 #include "HAL/PlatformProcess.h"
 #include "HAL/PlatformFileManager.h"
 #include "HAL/FileManager.h"
@@ -89,6 +92,70 @@ namespace ReadAllandExplainsExportImpl
 		return true;
 	}
 
+	static FString SanitizeExportStem(const FString& AssetName)
+	{
+		FString Result;
+		Result.Reserve(AssetName.Len());
+		for (const TCHAR Character : AssetName)
+		{
+			const bool bControlCharacter = Character < 32;
+			const bool bInvalidCharacter = FString(TEXT("<>:\"/\\|?*")).Contains(FString::Chr(Character));
+			Result.AppendChar(bControlCharacter || bInvalidCharacter ? TEXT('_') : Character);
+		}
+		while (!Result.IsEmpty() && (Result.EndsWith(TEXT(".")) || Result.EndsWith(TEXT(" "))))
+		{
+			Result.LeftChopInline(1);
+		}
+		if (Result.IsEmpty() || Result == TEXT(".") || Result == TEXT("..")) Result = TEXT("Asset");
+		if (Result.Len() > 80) Result.LeftInline(80);
+		return Result;
+	}
+
+	static FString BuildStableExportStem(const FAssetData& AssetData)
+	{
+		const FString ObjectPath = AssetData.GetObjectPathString();
+		const FTCHARToUTF8 ObjectPathUtf8(*ObjectPath);
+		const FString ObjectPathHash = LexToString(FIoHash::HashBuffer(ObjectPathUtf8.Get(), ObjectPathUtf8.Length())).Left(12);
+		return SanitizeExportStem(AssetData.AssetName.ToString()) + TEXT("__") + ObjectPathHash;
+	}
+
+	static bool MetadataBelongsToAsset(const FString& MetadataPath, const FString& ObjectPath)
+	{
+		FString JsonText;
+		TSharedPtr<FJsonObject> Metadata;
+		if (!FFileHelper::LoadFileToString(JsonText, *MetadataPath)) return false;
+		const TSharedRef<TJsonReader<>> Reader = TJsonReaderFactory<>::Create(JsonText);
+		if (!FJsonSerializer::Deserialize(Reader, Metadata) || !Metadata.IsValid()) return false;
+		FString ExistingObjectPath;
+		return Metadata->TryGetStringField(TEXT("objectPath"), ExistingObjectPath) && ExistingObjectPath == ObjectPath;
+	}
+
+	static FString ResolveExportStem(
+		const FAssetData& AssetData,
+		const FString& Directory,
+		const FString& FileSuffix,
+		const bool bWriteMetadata,
+		const bool bForceDisambiguation)
+	{
+		const FString LegacyStem = SanitizeExportStem(AssetData.AssetName.ToString());
+		if (bForceDisambiguation) return BuildStableExportStem(AssetData);
+		const FString DocumentPath = Directory / (LegacyStem + FileSuffix);
+		const FString MetadataPath = Directory / (LegacyStem + TEXT(".meta.json"));
+		if (!FPaths::FileExists(DocumentPath) && (!bWriteMetadata || !FPaths::FileExists(MetadataPath))) return LegacyStem;
+		return MetadataBelongsToAsset(MetadataPath, AssetData.GetObjectPathString()) ? LegacyStem : BuildStableExportStem(AssetData);
+	}
+
+	static bool ReserveOutputPath(const FString& Path, TSet<FString>* ReservedPathKeys)
+	{
+		if (!ReservedPathKeys) return true;
+		FString Key = FPaths::ConvertRelativePathToFull(Path);
+		Key.ReplaceInline(TEXT("\\"), TEXT("/"));
+		Key.ToLowerInline();
+		if (ReservedPathKeys->Contains(Key)) return false;
+		ReservedPathKeys->Add(Key);
+		return true;
+	}
+
 	// 保存文本到指定目录/文件；返回实际保存路径，失败返回空串
 	static FString SaveText(const FString& Text, const FString& Dir, const FString& AssetName, const FString& FileSuffix)
 	{
@@ -106,27 +173,60 @@ namespace ReadAllandExplainsExportImpl
 		return FString();
 	}
 
+	static FString SaveTextAtomic(const FString& Text, const FString& Dir, const FString& AssetName, const FString& FileSuffix)
+	{
+		if (Text.IsEmpty() || AssetName.IsEmpty() || !EnsureDir(Dir)) return FString();
+		const FString FinalPath = Dir / (AssetName + FileSuffix);
+		const FString TemporaryPath = FinalPath + TEXT(".tmp");
+		IPlatformFile& PlatformFile = FPlatformFileManager::Get().GetPlatformFile();
+		PlatformFile.DeleteFile(*TemporaryPath);
+		if (!FFileHelper::SaveStringToFile(Text, *TemporaryPath, FFileHelper::EEncodingOptions::ForceUTF8)) return FString();
+		if (!IFileManager::Get().Move(*FinalPath, *TemporaryPath, true, false, false, true))
+		{
+			PlatformFile.DeleteFile(*TemporaryPath);
+			return FString();
+		}
+		return FinalPath;
+	}
+
 	static FString SaveAssetDocument(
 		const FAssetData& AssetData,
 		UObject* Asset,
 		const FString& TechnicalDocument,
 		const FString& Directory,
-		const FString& FileSuffix)
+		const FString& FileSuffix,
+		FString& OutMetadataPath,
+		const bool bRequireMetadata,
+		const bool bForceDisambiguation,
+		TSet<FString>* ReservedPathKeys)
 	{
+		OutMetadataPath.Reset();
 		if (!Asset || TechnicalDocument.IsEmpty()) return FString();
 
 		const UReadAllandExplainsSettings* Settings = GetDefault<UReadAllandExplainsSettings>();
 		const EReadAllExportMode Mode = Settings ? Settings->ExportMode : EReadAllExportMode::Compact;
+		const bool bWriteMetadata = bRequireMetadata || !Settings || Settings->bWriteMetadataJson;
+		const FString ExportStem = ResolveExportStem(AssetData, Directory, FileSuffix, bWriteMetadata, bForceDisambiguation);
+		const FString DocumentPath = Directory / (ExportStem + FileSuffix);
+		const FString MetadataPath = Directory / (ExportStem + TEXT(".meta.json"));
+		if (!ReserveOutputPath(DocumentPath, ReservedPathKeys)
+			|| (bWriteMetadata && !ReserveOutputPath(MetadataPath, ReservedPathKeys)))
+		{
+			UE_LOG(LogTemp, Error, TEXT("ReadAllandExplains detected an output path collision for %s"), *Asset->GetPathName());
+			return FString();
+		}
+
 		const FReadAllAssetDocumentIR Document = FAssetInsightExporter::BuildDocument(AssetData, Asset, TechnicalDocument);
-		const FString SavedPath = SaveText(Document.RenderMarkdown(Mode), Directory, Asset->GetName(), FileSuffix);
+		const FString SavedPath = SaveText(Document.RenderMarkdown(Mode), Directory, ExportStem, FileSuffix);
 		if (SavedPath.IsEmpty()) return FString();
 
-		if (!Settings || Settings->bWriteMetadataJson)
+		if (bWriteMetadata)
 		{
-			const FString MetadataPath = SaveText(Document.RenderMetadataJson(Mode), Directory, Asset->GetName(), TEXT(".meta.json"));
-			if (MetadataPath.IsEmpty())
+			OutMetadataPath = SaveText(Document.RenderMetadataJson(Mode), Directory, ExportStem, TEXT(".meta.json"));
+			if (OutMetadataPath.IsEmpty())
 			{
-				UE_LOG(LogTemp, Warning, TEXT("ReadAllandExplains could not write metadata for %s"), *Asset->GetPathName());
+				UE_LOG(LogTemp, Error, TEXT("ReadAllandExplains could not write metadata for %s"), *Asset->GetPathName());
+				return FString();
 			}
 		}
 		return SavedPath;
@@ -135,7 +235,14 @@ namespace ReadAllandExplainsExportImpl
 	// 尝试把单个资产按类型导出；返回：0=成功, 1=失败（类型支持但导出空或保存失败）, 2=跳过（类型不支持）
 	enum class EExportResult : uint8 { Success, Failed, Skipped };
 
-	static EExportResult ExportOneAsset(const FAssetData& AssetData, FString& OutSavedPath, const FString& ExportRootOverride = FString())
+	static EExportResult ExportOneAsset(
+		const FAssetData& AssetData,
+		FString& OutSavedPath,
+		FString& OutMetadataPath,
+		const FString& ExportRootOverride = FString(),
+		const bool bRequireMetadata = false,
+		const bool bForceDisambiguation = false,
+		TSet<FString>* ReservedPathKeys = nullptr)
 	{
 		UObject* Obj = AssetData.GetAsset();
 		if (!Obj) return EExportResult::Failed;
@@ -150,7 +257,7 @@ namespace ReadAllandExplainsExportImpl
 		// 蓝图
 		if (UBlueprint* Blueprint = Cast<UBlueprint>(Obj))
 		{
-			const FString Saved = SaveAssetDocument(AssetData, Blueprint, FBlueprintToTextExporter::ExportBlueprintToText(Blueprint), BlueprintDir, TEXT("_ReadableCode.txt"));
+			const FString Saved = SaveAssetDocument(AssetData, Blueprint, FBlueprintToTextExporter::ExportBlueprintToText(Blueprint), BlueprintDir, TEXT("_ReadableCode.txt"), OutMetadataPath, bRequireMetadata, bForceDisambiguation, ReservedPathKeys);
 			if (Saved.IsEmpty()) return EExportResult::Failed;
 			OutSavedPath = Saved;
 			return EExportResult::Success;
@@ -159,7 +266,7 @@ namespace ReadAllandExplainsExportImpl
 		// 材质 / 材质实例（注意：UMaterialInstance 也是 UMaterialInterface）
 		if (UMaterialInterface* MatIface = Cast<UMaterialInterface>(Obj))
 		{
-			const FString Saved = SaveAssetDocument(AssetData, MatIface, FMaterialToTextExporter::ExportMaterialToText(MatIface), MaterialDir, TEXT("_ReadableMaterial.md"));
+			const FString Saved = SaveAssetDocument(AssetData, MatIface, FMaterialToTextExporter::ExportMaterialToText(MatIface), MaterialDir, TEXT("_ReadableMaterial.md"), OutMetadataPath, bRequireMetadata, bForceDisambiguation, ReservedPathKeys);
 			if (Saved.IsEmpty()) return EExportResult::Failed;
 			OutSavedPath = Saved;
 			return EExportResult::Success;
@@ -168,7 +275,7 @@ namespace ReadAllandExplainsExportImpl
 		// 材质函数
 		if (UMaterialFunctionInterface* MatFunc = Cast<UMaterialFunctionInterface>(Obj))
 		{
-			const FString Saved = SaveAssetDocument(AssetData, MatFunc, FMaterialToTextExporter::ExportMaterialFunctionToText(MatFunc), MaterialDir, TEXT("_ReadableMaterialFunction.md"));
+			const FString Saved = SaveAssetDocument(AssetData, MatFunc, FMaterialToTextExporter::ExportMaterialFunctionToText(MatFunc), MaterialDir, TEXT("_ReadableMaterialFunction.md"), OutMetadataPath, bRequireMetadata, bForceDisambiguation, ReservedPathKeys);
 			if (Saved.IsEmpty()) return EExportResult::Failed;
 			OutSavedPath = Saved;
 			return EExportResult::Success;
@@ -177,7 +284,7 @@ namespace ReadAllandExplainsExportImpl
 		// Niagara System / Emitter / Script（Module、Dynamic Input 等也属于 UNiagaraScript）
 		if (Obj->IsA<UNiagaraSystem>() || Obj->IsA<UNiagaraEmitter>() || Obj->IsA<UNiagaraScript>())
 		{
-			const FString Saved = SaveAssetDocument(AssetData, Obj, FNiagaraToTextExporter::ExportNiagaraAssetToText(Obj), NiagaraDir, TEXT("_ReadableNiagara.md"));
+			const FString Saved = SaveAssetDocument(AssetData, Obj, FNiagaraToTextExporter::ExportNiagaraAssetToText(Obj), NiagaraDir, TEXT("_ReadableNiagara.md"), OutMetadataPath, bRequireMetadata, bForceDisambiguation, ReservedPathKeys);
 			if (Saved.IsEmpty()) return EExportResult::Failed;
 			OutSavedPath = Saved;
 			return EExportResult::Success;
@@ -190,7 +297,11 @@ namespace ReadAllandExplainsExportImpl
 				Obj,
 				FCommonAssetToTextExporter::ExportAssetToText(Obj),
 				CommonDir,
-				FCommonAssetToTextExporter::GetFileSuffix(Obj));
+				FCommonAssetToTextExporter::GetFileSuffix(Obj),
+				OutMetadataPath,
+				bRequireMetadata,
+				bForceDisambiguation,
+				ReservedPathKeys);
 			if (Saved.IsEmpty()) return EExportResult::Failed;
 			OutSavedPath = Saved;
 			return EExportResult::Success;
@@ -210,7 +321,9 @@ namespace ReadAllandExplainsExportImpl
 			|| AssetData.IsInstanceOf(UStaticMesh::StaticClass())
 			|| AssetData.IsInstanceOf(UTexture::StaticClass())
 			|| AssetData.IsInstanceOf(UDataTable::StaticClass())
-			|| AssetData.IsInstanceOf(UCurveTable::StaticClass());
+			|| AssetData.IsInstanceOf(UCurveTable::StaticClass())
+			|| AssetData.IsInstanceOf(UEnum::StaticClass())
+			|| AssetData.IsInstanceOf(UDataAsset::StaticClass());
 	}
 
 	static TArray<FAssetData> GetSelectedAssetsFromContentBrowser()
@@ -242,21 +355,67 @@ using namespace ReadAllandExplainsExportImpl;
 // 批量导出：从一组 FAssetData 路由到对应导出器，返回结果与可打开路径
 struct FBatchExportResult
 {
+	int32 AttemptedCount = 0;
 	int32 SuccessCount = 0;
 	int32 FailedCount = 0;
 	int32 SkippedCount = 0;
+	bool bIndexMarkdownWritten = false;
+	bool bIndexJsonWritten = false;
+	bool bReadmeWritten = false;
+	bool bCompleteManifestWritten = false;
+	bool bPublished = false;
 	FString FirstSavedPath;
 	TArray<FAssetData> ExportedAssets;
 	TArray<FString> SavedPaths;
+	TArray<FString> MetadataPaths;
+	TArray<FString> Errors;
 };
 
-static FBatchExportResult ExportAssetDataList(const TArray<FAssetData>& AssetList, const FString& ExportRootOverride = FString())
+static FBatchExportResult ExportAssetDataList(
+	const TArray<FAssetData>& AssetList,
+	const FString& ExportRootOverride = FString(),
+	const bool bRequireMetadata = false)
 {
 	FBatchExportResult R;
+	R.AttemptedCount = AssetList.Num();
+	TMap<FString, int32> CollisionGroupCounts;
 	for (const FAssetData& AssetData : AssetList)
 	{
+		UObject* Asset = AssetData.GetAsset();
+		if (!Asset) continue;
+		FString Folder;
+		if (Asset->IsA<UBlueprint>()) Folder = TEXT("Blueprints");
+		else if (Asset->IsA<UMaterialInterface>() || Asset->IsA<UMaterialFunctionInterface>()) Folder = TEXT("Materials");
+		else if (Asset->IsA<UNiagaraSystem>() || Asset->IsA<UNiagaraEmitter>() || Asset->IsA<UNiagaraScript>()) Folder = TEXT("Niagara");
+		else Folder = FCommonAssetToTextExporter::GetExportFolderName(Asset);
+		FString CollisionKey = Folder + TEXT("/") + SanitizeExportStem(AssetData.AssetName.ToString());
+		CollisionKey.ToLowerInline();
+		++CollisionGroupCounts.FindOrAdd(CollisionKey);
+	}
+
+	TSet<FString> ReservedPathKeys;
+	for (const FAssetData& AssetData : AssetList)
+	{
+		UObject* Asset = AssetData.GetAsset();
+		FString Folder;
+		if (Asset && Asset->IsA<UBlueprint>()) Folder = TEXT("Blueprints");
+		else if (Asset && (Asset->IsA<UMaterialInterface>() || Asset->IsA<UMaterialFunctionInterface>())) Folder = TEXT("Materials");
+		else if (Asset && (Asset->IsA<UNiagaraSystem>() || Asset->IsA<UNiagaraEmitter>() || Asset->IsA<UNiagaraScript>())) Folder = TEXT("Niagara");
+		else if (Asset) Folder = FCommonAssetToTextExporter::GetExportFolderName(Asset);
+		FString CollisionKey = Folder + TEXT("/") + SanitizeExportStem(AssetData.AssetName.ToString());
+		CollisionKey.ToLowerInline();
+		const bool bForceDisambiguation = CollisionGroupCounts.FindRef(CollisionKey) > 1;
+
 		FString SavedPath;
-		const ReadAllandExplainsExportImpl::EExportResult Result = ReadAllandExplainsExportImpl::ExportOneAsset(AssetData, SavedPath, ExportRootOverride);
+		FString MetadataPath;
+		const ReadAllandExplainsExportImpl::EExportResult Result = ReadAllandExplainsExportImpl::ExportOneAsset(
+			AssetData,
+			SavedPath,
+			MetadataPath,
+			ExportRootOverride,
+			bRequireMetadata,
+			bForceDisambiguation,
+			&ReservedPathKeys);
 		switch (Result)
 		{
 		case ReadAllandExplainsExportImpl::EExportResult::Success:
@@ -264,13 +423,16 @@ static FBatchExportResult ExportAssetDataList(const TArray<FAssetData>& AssetLis
 			if (R.FirstSavedPath.IsEmpty()) R.FirstSavedPath = SavedPath;
 			R.ExportedAssets.Add(AssetData);
 			R.SavedPaths.Add(SavedPath);
+			R.MetadataPaths.Add(MetadataPath);
 			break;
 		case ReadAllandExplainsExportImpl::EExportResult::Failed:
 			++R.FailedCount;
+			R.Errors.Add(FString::Printf(TEXT("ASSET_EXPORT_FAILED:%s"), *AssetData.GetObjectPathString()));
 			break;
 		case ReadAllandExplainsExportImpl::EExportResult::Skipped:
 		default:
 			++R.SkippedCount;
+			R.Errors.Add(FString::Printf(TEXT("ASSET_UNSUPPORTED:%s"), *AssetData.GetObjectPathString()));
 			break;
 		}
 	}
@@ -278,20 +440,33 @@ static FBatchExportResult ExportAssetDataList(const TArray<FAssetData>& AssetLis
 	{
 		const FString IndexDir = ExportRootOverride.IsEmpty() ? GetExportRootDir() : ExportRootOverride;
 		TArray<FString> IndexSavedPaths = R.SavedPaths;
+		TArray<FString> IndexMetadataPaths = R.MetadataPaths;
 		if (!ExportRootOverride.IsEmpty())
 		{
 			const FString RelativeBase = FPaths::ConvertRelativePathToFull(ExportRootOverride) + TEXT("/");
-			for (FString& SavedPath : IndexSavedPaths)
+			auto MakeRelativePaths = [&RelativeBase](TArray<FString>& Paths)
 			{
-				SavedPath = FPaths::ConvertRelativePathToFull(SavedPath);
-				FPaths::MakePathRelativeTo(SavedPath, *RelativeBase);
-				SavedPath.ReplaceInline(TEXT("\\"), TEXT("/"));
-			}
+				for (FString& Path : Paths)
+				{
+					if (Path.IsEmpty()) continue;
+					Path = FPaths::ConvertRelativePathToFull(Path);
+					FPaths::MakePathRelativeTo(Path, *RelativeBase);
+					Path.ReplaceInline(TEXT("\\"), TEXT("/"));
+				}
+			};
+			MakeRelativePaths(IndexSavedPaths);
+			MakeRelativePaths(IndexMetadataPaths);
 		}
-		const FString IndexText = FAssetInsightExporter::BuildBatchIndex(R.ExportedAssets, IndexSavedPaths);
-		SaveText(IndexText, IndexDir, TEXT("index"), TEXT(".md"));
-		const FString IndexJson = FAssetInsightExporter::BuildBatchIndexJson(R.ExportedAssets, IndexSavedPaths);
-		SaveText(IndexJson, IndexDir, TEXT("index"), TEXT(".json"));
+		const FString IndexText = FAssetInsightExporter::BuildBatchIndex(R.ExportedAssets, IndexSavedPaths, IndexMetadataPaths);
+		R.bIndexMarkdownWritten = !SaveText(IndexText, IndexDir, TEXT("index"), TEXT(".md")).IsEmpty();
+		const FString IndexJson = FAssetInsightExporter::BuildBatchIndexJson(R.ExportedAssets, IndexSavedPaths, IndexMetadataPaths);
+		R.bIndexJsonWritten = !SaveText(IndexJson, IndexDir, TEXT("index"), TEXT(".json")).IsEmpty();
+		if (!R.bIndexMarkdownWritten) R.Errors.Add(TEXT("INDEX_MARKDOWN_WRITE_FAILED"));
+		if (!R.bIndexJsonWritten) R.Errors.Add(TEXT("INDEX_JSON_WRITE_FAILED"));
+	}
+	else
+	{
+		R.Errors.Add(TEXT("NO_ASSETS_EXPORTED"));
 	}
 	return R;
 }
@@ -354,15 +529,18 @@ static FString BuildContextPackManifest(
 	const FBatchExportResult& Result,
 	const int32 DependencyDepth,
 	const FString& OriginRequestId = FString(),
-	const FString& BasePackId = FString())
+	const FString& BasePackId = FString(),
+	bool* OutAllFilesReadable = nullptr)
 {
+	if (OutAllFilesReadable) *OutAllFilesReadable = true;
 	TArray<FString> PackFiles;
-	if (State == TEXT("complete"))
+	if (State != TEXT("writing"))
 	{
 		IFileManager::Get().FindFilesRecursive(PackFiles, *PackDir, TEXT("*"), true, false, true);
-		PackFiles.RemoveAll([](const FString& Path)
+		const FString RootManifestPath = FPaths::ConvertRelativePathToFull(PackDir / TEXT("context-pack.json"));
+		PackFiles.RemoveAll([&RootManifestPath](const FString& Path)
 		{
-			return FPaths::GetCleanFilename(Path).Equals(TEXT("context-pack.json"), ESearchCase::IgnoreCase);
+			return FPaths::ConvertRelativePathToFull(Path).Equals(RootManifestPath, ESearchCase::IgnoreCase);
 		});
 		PackFiles.Sort();
 	}
@@ -373,21 +551,25 @@ static FString BuildContextPackManifest(
 	for (const FString& FilePath : PackFiles)
 	{
 		TArray<uint8> Bytes;
-		if (!FFileHelper::LoadFileToArray(Bytes, *FilePath)) continue;
+		if (!FFileHelper::LoadFileToArray(Bytes, *FilePath))
+		{
+			if (OutAllFilesReadable) *OutAllFilesReadable = false;
+			continue;
+		}
 		FString RelativePath = FPaths::ConvertRelativePathToFull(FilePath);
 		FPaths::MakePathRelativeTo(RelativePath, *RelativeBase);
 		RelativePath.ReplaceInline(TEXT("\\"), TEXT("/"));
-		const FString Fingerprint = LexToString(FIoHash::HashBuffer(Bytes.GetData(), Bytes.Num()));
+		const FString Fingerprint = FSHA1::HashBuffer(Bytes.GetData(), Bytes.Num()).ToString().ToLower();
 
 		TSharedRef<FJsonObject> File = MakeShared<FJsonObject>();
 		File->SetStringField(TEXT("path"), RelativePath);
 		File->SetNumberField(TEXT("size"), Bytes.Num());
-		File->SetStringField(TEXT("fingerprint"), TEXT("blake3-160:") + Fingerprint);
+		File->SetStringField(TEXT("fingerprint"), TEXT("sha1:") + Fingerprint);
 		FileValues.Add(MakeShared<FJsonValueObject>(File));
 		FingerprintSource += RelativePath + TEXT(":") + FString::FromInt(Bytes.Num()) + TEXT(":") + Fingerprint + TEXT("\n");
 	}
 	const FTCHARToUTF8 FingerprintUtf8(*FingerprintSource);
-	const FString PackFingerprint = LexToString(FIoHash::HashBuffer(FingerprintUtf8.Get(), FingerprintUtf8.Length()));
+	const FString PackFingerprint = FSHA1::HashBuffer(FingerprintUtf8.Get(), FingerprintUtf8.Length()).ToString().ToLower();
 
 	TSharedRef<FJsonObject> Root = MakeShared<FJsonObject>();
 	Root->SetNumberField(TEXT("schemaVersion"), 1);
@@ -395,12 +577,22 @@ static FString BuildContextPackManifest(
 	Root->SetStringField(TEXT("packId"), PackId);
 	Root->SetStringField(TEXT("state"), State);
 	Root->SetStringField(TEXT("createdUtc"), FDateTime::UtcNow().ToIso8601());
-	Root->SetStringField(TEXT("fingerprint"), TEXT("blake3-160:") + PackFingerprint);
+	Root->SetStringField(TEXT("fingerprint"), TEXT("sha1:") + PackFingerprint);
 	Root->SetNumberField(TEXT("dependencyDepth"), DependencyDepth);
+	Root->SetNumberField(TEXT("attemptedAssetCount"), Result.AttemptedCount);
 	Root->SetNumberField(TEXT("exportedAssetCount"), Result.ExportedAssets.Num());
 	Root->SetNumberField(TEXT("failedCount"), Result.FailedCount);
 	Root->SetNumberField(TEXT("skippedCount"), Result.SkippedCount);
 	Root->SetArrayField(TEXT("files"), FileValues);
+	if (!Result.Errors.IsEmpty())
+	{
+		TArray<TSharedPtr<FJsonValue>> ErrorValues;
+		for (const FString& Error : Result.Errors)
+		{
+			ErrorValues.Add(MakeShared<FJsonValueString>(Error));
+		}
+		Root->SetArrayField(TEXT("errors"), ErrorValues);
+	}
 	if (!OriginRequestId.IsEmpty()) Root->SetStringField(TEXT("originRequestId"), OriginRequestId);
 	if (!BasePackId.IsEmpty()) Root->SetStringField(TEXT("basePackId"), BasePackId);
 
@@ -417,14 +609,21 @@ static FString BuildContextPackManifest(
 		TSharedRef<FJsonObject> Asset = MakeShared<FJsonObject>();
 		Asset->SetStringField(TEXT("objectPath"), Result.ExportedAssets[Index].GetObjectPathString());
 		Asset->SetStringField(TEXT("packageName"), Result.ExportedAssets[Index].PackageName.ToString());
-		FString ExportFile = Result.SavedPaths.IsValidIndex(Index) ? Result.SavedPaths[Index] : FString();
-		if (!ExportFile.IsEmpty())
+		auto MakeRelativePath = [&RelativeBase](FString Path)
 		{
-			ExportFile = FPaths::ConvertRelativePathToFull(ExportFile);
-			FPaths::MakePathRelativeTo(ExportFile, *RelativeBase);
-			ExportFile.ReplaceInline(TEXT("\\"), TEXT("/"));
+			if (!Path.IsEmpty())
+			{
+				Path = FPaths::ConvertRelativePathToFull(Path);
+				FPaths::MakePathRelativeTo(Path, *RelativeBase);
+				Path.ReplaceInline(TEXT("\\"), TEXT("/"));
+			}
+			return Path;
+		};
+		Asset->SetStringField(TEXT("exportFile"), MakeRelativePath(Result.SavedPaths.IsValidIndex(Index) ? Result.SavedPaths[Index] : FString()));
+		if (Result.MetadataPaths.IsValidIndex(Index) && !Result.MetadataPaths[Index].IsEmpty())
+		{
+			Asset->SetStringField(TEXT("metadataFile"), MakeRelativePath(Result.MetadataPaths[Index]));
 		}
-		Asset->SetStringField(TEXT("exportFile"), ExportFile);
 		AssetValues.Add(MakeShared<FJsonValueObject>(Asset));
 	}
 	Root->SetArrayField(TEXT("assets"), AssetValues);
@@ -433,6 +632,103 @@ static FString BuildContextPackManifest(
 	TSharedRef<TJsonWriter<TCHAR, TPrettyJsonPrintPolicy<TCHAR>>> Writer = TJsonWriterFactory<TCHAR, TPrettyJsonPrintPolicy<TCHAR>>::Create(&Output);
 	FJsonSerializer::Serialize(Root, Writer);
 	return Output;
+}
+
+static bool ValidateStagedContextPack(
+	const TArray<FAssetData>& Roots,
+	const FString& PackDir,
+	const FBatchExportResult& Result,
+	FString& OutError)
+{
+	if (Result.AttemptedCount <= 0)
+	{
+		OutError = TEXT("NO_ASSETS_ATTEMPTED");
+		return false;
+	}
+	if (Result.SuccessCount != Result.AttemptedCount || Result.FailedCount != 0 || Result.SkippedCount != 0)
+	{
+		OutError = TEXT("PARTIAL_ASSET_EXPORT");
+		return false;
+	}
+	if (Result.ExportedAssets.Num() != Result.AttemptedCount
+		|| Result.SavedPaths.Num() != Result.AttemptedCount
+		|| Result.MetadataPaths.Num() != Result.AttemptedCount)
+	{
+		OutError = TEXT("ASSET_FILE_MAPPING_INCOMPLETE");
+		return false;
+	}
+	if (!Result.bIndexMarkdownWritten || !Result.bIndexJsonWritten || !Result.bReadmeWritten)
+	{
+		OutError = TEXT("REQUIRED_PACK_FILE_WRITE_FAILED");
+		return false;
+	}
+
+	TSet<FString> ExportedObjectPaths;
+	TSet<FString> FileKeys;
+	for (int32 Index = 0; Index < Result.ExportedAssets.Num(); ++Index)
+	{
+		ExportedObjectPaths.Add(Result.ExportedAssets[Index].GetObjectPathString());
+		for (const FString& Path : {Result.SavedPaths[Index], Result.MetadataPaths[Index]})
+		{
+			if (Path.IsEmpty() || IFileManager::Get().FileSize(*Path) <= 0)
+			{
+				OutError = TEXT("REQUIRED_ASSET_FILE_MISSING");
+				return false;
+			}
+			FString Key = FPaths::ConvertRelativePathToFull(Path);
+			Key.ReplaceInline(TEXT("\\"), TEXT("/"));
+			Key.ToLowerInline();
+			if (FileKeys.Contains(Key))
+			{
+				OutError = TEXT("DUPLICATE_ASSET_FILE_PATH");
+				return false;
+			}
+			FileKeys.Add(Key);
+		}
+	}
+	for (const FAssetData& Root : Roots)
+	{
+		if (!ExportedObjectPaths.Contains(Root.GetObjectPathString()))
+		{
+			OutError = TEXT("ROOT_ASSET_NOT_EXPORTED");
+			return false;
+		}
+	}
+	for (const TCHAR* RequiredFile : {TEXT("README.md"), TEXT("index.md"), TEXT("index.json")})
+	{
+		if (IFileManager::Get().FileSize(*(PackDir / RequiredFile)) <= 0)
+		{
+			OutError = FString::Printf(TEXT("REQUIRED_FILE_MISSING:%s"), RequiredFile);
+			return false;
+		}
+	}
+	TArray<FString> TemporaryFiles;
+	IFileManager::Get().FindFilesRecursive(TemporaryFiles, *PackDir, TEXT("*.tmp"), true, false, true);
+	if (!TemporaryFiles.IsEmpty())
+	{
+		OutError = TEXT("TEMPORARY_FILE_REMAINS");
+		return false;
+	}
+	FString IndexJson;
+	TSharedPtr<FJsonObject> IndexObject;
+	if (!FFileHelper::LoadFileToString(IndexJson, *(PackDir / TEXT("index.json"))))
+	{
+		OutError = TEXT("INDEX_JSON_INVALID");
+		return false;
+	}
+	const TSharedRef<TJsonReader<>> IndexReader = TJsonReaderFactory<>::Create(IndexJson);
+	if (!FJsonSerializer::Deserialize(IndexReader, IndexObject) || !IndexObject.IsValid())
+	{
+		OutError = TEXT("INDEX_JSON_INVALID");
+		return false;
+	}
+	const TArray<TSharedPtr<FJsonValue>>* IndexAssets = nullptr;
+	if (!IndexObject->TryGetArrayField(TEXT("assets"), IndexAssets) || !IndexAssets || IndexAssets->Num() != Result.AttemptedCount)
+	{
+		OutError = TEXT("INDEX_ASSET_COUNT_MISMATCH");
+		return false;
+	}
+	return true;
 }
 
 static FBatchExportResult ExportContextPack(
@@ -452,23 +748,47 @@ static FBatchExportResult ExportContextPack(
 		const FTCHARToUTF8 RequestUtf8(*OriginRequestId);
 		RequestSuffix = TEXT("_") + LexToString(FIoHash::HashBuffer(RequestUtf8.Get(), RequestUtf8.Length())).Left(12);
 	}
-	const FString PackId = TEXT("ContextPack_") + Timestamp + RequestSuffix;
+	const FString UniqueSuffix = TEXT("_") + FGuid::NewGuid().ToString(EGuidFormats::Digits).Left(8);
+	const FString PackId = TEXT("ContextPack_") + Timestamp + RequestSuffix + UniqueSuffix;
 	const FString PacksRoot = GetExportRootDir() / TEXT("ContextPacks");
 	const FString FinalPackDir = PacksRoot / PackId;
 	const FString TemporaryPackDir = PacksRoot / (PackId + TEXT(".tmp"));
 	IPlatformFile& PlatformFile = FPlatformFileManager::Get().GetPlatformFile();
-	EnsureDir(PacksRoot);
-	if (PlatformFile.DirectoryExists(*TemporaryPackDir))
-	{
-		PlatformFile.DeleteDirectoryRecursively(*TemporaryPackDir);
-	}
-	EnsureDir(TemporaryPackDir);
-	OutPackDir = TemporaryPackDir;
-
 	FBatchExportResult Result;
-	SaveText(BuildContextPackManifest(PackId, TemporaryPackDir, TEXT("writing"), Roots, Result, DependencyDepth, OriginRequestId, BasePackId), TemporaryPackDir, TEXT("context-pack"), TEXT(".json"));
+	OutPackDir.Reset();
+
+	auto FailPack = [&](const FString& Error)
+	{
+		Result.Errors.AddUnique(Error);
+		if (PlatformFile.DirectoryExists(*TemporaryPackDir))
+		{
+			SaveTextAtomic(
+				BuildContextPackManifest(PackId, TemporaryPackDir, TEXT("failed"), Roots, Result, DependencyDepth, OriginRequestId, BasePackId),
+				TemporaryPackDir,
+				TEXT("context-pack"),
+				TEXT(".json"));
+		}
+		UE_LOG(LogTemp, Error, TEXT("ReadAllandExplains Context Pack failed [%s]: %s"), *Error, *TemporaryPackDir);
+	};
+
+	if (!EnsureDir(PacksRoot) || PlatformFile.DirectoryExists(*FinalPackDir) || PlatformFile.DirectoryExists(*TemporaryPackDir) || !EnsureDir(TemporaryPackDir))
+	{
+		FailPack(TEXT("PACK_DIRECTORY_CREATE_FAILED"));
+		return Result;
+	}
+	OutPackDir = TemporaryPackDir;
+	if (SaveTextAtomic(
+		BuildContextPackManifest(PackId, TemporaryPackDir, TEXT("writing"), Roots, Result, DependencyDepth, OriginRequestId, BasePackId),
+		TemporaryPackDir,
+		TEXT("context-pack"),
+		TEXT(".json")).IsEmpty())
+	{
+		FailPack(TEXT("WRITING_MANIFEST_WRITE_FAILED"));
+		return Result;
+	}
+
 	const TArray<FAssetData> Assets = CollectContextPackAssets(Roots, DependencyDepth);
-	Result = ExportAssetDataList(Assets, TemporaryPackDir);
+	Result = ExportAssetDataList(Assets, TemporaryPackDir, true);
 
 	FString Readme;
 	Readme += TEXT("# ReadAllandExplains Context Pack\n\n");
@@ -476,19 +796,47 @@ static FBatchExportResult ExportContextPack(
 		Roots.Num(), DependencyDepth, Result.SuccessCount, Result.FailedCount, Result.SkippedCount);
 	Readme += TEXT("## 使用方式\n\n优先把本目录的 `context-pack.json`、`index.json` 和根资产文档交给 AI；需要分析具体节点、Renderer 或曲线时，再按需读取对应 `.meta.json`。推荐使用配套 ReadAllandExplains Skill 与 MCP，先读摘要、再读取目标片段，避免一次加载完整大文件。\n\n");
 	Readme += TEXT("```text\n请把这个 ReadAllandExplains Context Pack 作为一个整体分析。先解释根资产的视觉目标与执行流程，再沿 index 中的真实依赖检查自定义模块、材质、Renderer 绑定与曲线。不要把同名参数直接当作已连接。\n```\n");
-	SaveText(Readme, TemporaryPackDir, TEXT("README"), TEXT(".md"));
-	SaveText(BuildContextPackManifest(PackId, TemporaryPackDir, TEXT("complete"), Roots, Result, DependencyDepth, OriginRequestId, BasePackId), TemporaryPackDir, TEXT("context-pack"), TEXT(".json"));
+	Result.bReadmeWritten = !SaveText(Readme, TemporaryPackDir, TEXT("README"), TEXT(".md")).IsEmpty();
+	if (!Result.bReadmeWritten) Result.Errors.Add(TEXT("README_WRITE_FAILED"));
 
-	if (PlatformFile.DirectoryExists(*FinalPackDir))
+	FString ValidationError;
+	if (!ValidateStagedContextPack(Roots, TemporaryPackDir, Result, ValidationError))
 	{
-		PlatformFile.DeleteDirectoryRecursively(*FinalPackDir);
-	}
-	if (!PlatformFile.MoveFile(*FinalPackDir, *TemporaryPackDir))
-	{
-		UE_LOG(LogTemp, Error, TEXT("ReadAllandExplains could not publish Context Pack atomically: %s -> %s"), *TemporaryPackDir, *FinalPackDir);
-		++Result.FailedCount;
+		FailPack(ValidationError);
 		return Result;
 	}
+
+	bool bAllManifestFilesReadable = false;
+	const FString CompleteManifest = BuildContextPackManifest(
+		PackId,
+		TemporaryPackDir,
+		TEXT("complete"),
+		Roots,
+		Result,
+		DependencyDepth,
+		OriginRequestId,
+		BasePackId,
+		&bAllManifestFilesReadable);
+	if (!bAllManifestFilesReadable)
+	{
+		FailPack(TEXT("MANIFEST_FILE_READ_FAILED"));
+		return Result;
+	}
+	Result.bCompleteManifestWritten = !SaveTextAtomic(CompleteManifest, TemporaryPackDir, TEXT("context-pack"), TEXT(".json")).IsEmpty();
+	if (!Result.bCompleteManifestWritten)
+	{
+		FailPack(TEXT("COMPLETE_MANIFEST_WRITE_FAILED"));
+		return Result;
+	}
+	if (!PlatformFile.MoveFile(*FinalPackDir, *TemporaryPackDir)
+		|| !PlatformFile.DirectoryExists(*FinalPackDir)
+		|| PlatformFile.DirectoryExists(*TemporaryPackDir))
+	{
+		FailPack(TEXT("PACK_ATOMIC_PUBLISH_FAILED"));
+		return Result;
+	}
+
+	Result.bPublished = true;
 	OutPackDir = FinalPackDir;
 	return Result;
 }
@@ -554,8 +902,7 @@ namespace ReadAllandExplainsSyncLive
 		IPlatformFile& PlatformFile = FPlatformFileManager::Get().GetPlatformFile();
 		PlatformFile.DeleteFile(*TemporaryPath);
 		if (!FFileHelper::SaveStringToFile(Output, *TemporaryPath, FFileHelper::EEncodingOptions::ForceUTF8)) return false;
-		if (PlatformFile.FileExists(*FinalPath)) PlatformFile.DeleteFile(*FinalPath);
-		if (!PlatformFile.MoveFile(*FinalPath, *TemporaryPath))
+		if (!IFileManager::Get().Move(*FinalPath, *TemporaryPath, true, false, false, true))
 		{
 			PlatformFile.DeleteFile(*TemporaryPath);
 			return false;
@@ -563,7 +910,7 @@ namespace ReadAllandExplainsSyncLive
 		return true;
 	}
 
-	static void WriteResult(
+	static bool WriteResult(
 		const FString& RequestId,
 		const FString& State,
 		const FString& ErrorCode,
@@ -596,7 +943,9 @@ namespace ReadAllandExplainsSyncLive
 		if (!SaveJsonObjectAtomic(ResultsDir(), RequestId + TEXT(".json"), Result))
 		{
 			UE_LOG(LogTemp, Error, TEXT("ReadAllandExplains SyncLive could not write result for request %s"), *RequestId);
+			return false;
 		}
+		return true;
 	}
 
 	static void ArchiveRequest(const FString& ProcessingPath, const FString& RequestId)
@@ -610,6 +959,47 @@ namespace ReadAllandExplainsSyncLive
 		}
 	}
 
+	static bool FindPublishedPackForRequest(
+		const FString& RequestId,
+		FString& OutPackDir,
+		FBatchExportResult& OutResult)
+	{
+		const FString PacksRoot = GetExportRootDir() / TEXT("ContextPacks");
+		TArray<FString> PackDirectories;
+		IFileManager::Get().FindFiles(PackDirectories, *(PacksRoot / TEXT("*")), false, true);
+		PackDirectories.Sort();
+		for (int32 Index = PackDirectories.Num() - 1; Index >= 0; --Index)
+		{
+			const FString PackId = PackDirectories[Index];
+			if (PackId.EndsWith(TEXT(".tmp"), ESearchCase::IgnoreCase)) continue;
+			const FString PackDir = PacksRoot / PackId;
+			TSharedPtr<FJsonObject> Manifest;
+			FString ParseError;
+			if (!LoadJsonObject(PackDir / TEXT("context-pack.json"), Manifest, ParseError)) continue;
+			FString State;
+			FString OriginRequestId;
+			FString ManifestPackId;
+			Manifest->TryGetStringField(TEXT("state"), State);
+			Manifest->TryGetStringField(TEXT("originRequestId"), OriginRequestId);
+			Manifest->TryGetStringField(TEXT("packId"), ManifestPackId);
+			if (State != TEXT("complete") || OriginRequestId != RequestId || ManifestPackId != PackId) continue;
+
+			double ExportedCount = 0;
+			double FailedCount = 0;
+			double SkippedCount = 0;
+			Manifest->TryGetNumberField(TEXT("exportedAssetCount"), ExportedCount);
+			Manifest->TryGetNumberField(TEXT("failedCount"), FailedCount);
+			Manifest->TryGetNumberField(TEXT("skippedCount"), SkippedCount);
+			OutResult.SuccessCount = static_cast<int32>(ExportedCount);
+			OutResult.FailedCount = static_cast<int32>(FailedCount);
+			OutResult.SkippedCount = static_cast<int32>(SkippedCount);
+			OutResult.bPublished = true;
+			OutPackDir = PackDir;
+			return true;
+		}
+		return false;
+	}
+
 	static void RecoverInterruptedRequests()
 	{
 		EnsureQueueDirectories();
@@ -621,18 +1011,54 @@ namespace ReadAllandExplainsSyncLive
 			const FString RequestId = FPaths::GetBaseFilename(File);
 			const FString ProcessingPath = ProcessingDir() / File;
 			const FString ExistingResultPath = ResultsDir() / (RequestId + TEXT(".json"));
-			if (!FPaths::FileExists(ExistingResultPath))
+			if (FPaths::FileExists(ExistingResultPath))
 			{
-				WriteResult(RequestId, TEXT("failed"), TEXT("EDITOR_INTERRUPTED"), TEXT("The editor stopped while processing this request. Submit a new authorized request to retry."));
+				ArchiveRequest(ProcessingPath, RequestId);
+				continue;
 			}
-			ArchiveRequest(ProcessingPath, RequestId);
+
+			FString BasePackId;
+			FString BasePackFingerprint;
+			TSharedPtr<FJsonObject> Request;
+			FString RequestError;
+			if (LoadJsonObject(ProcessingPath, Request, RequestError))
+			{
+				Request->TryGetStringField(TEXT("basePackId"), BasePackId);
+				Request->TryGetStringField(TEXT("basePackFingerprint"), BasePackFingerprint);
+			}
+
+			FString PublishedPackDir;
+			FBatchExportResult RecoveredResult;
+			const bool bPackPublished = FindPublishedPackForRequest(RequestId, PublishedPackDir, RecoveredResult);
+			const bool bResultWritten = bPackPublished
+				? WriteResult(
+					RequestId,
+					TEXT("complete"),
+					FString(),
+					TEXT("Targeted Context Pack completed; the result was recovered after an interrupted result write."),
+					PublishedPackDir,
+					&RecoveredResult,
+					BasePackId,
+					BasePackFingerprint)
+				: WriteResult(
+					RequestId,
+					TEXT("failed"),
+					TEXT("EDITOR_INTERRUPTED"),
+					TEXT("The editor stopped before publishing this request. Submit a new authorized request to retry."),
+					FString(),
+					nullptr,
+					BasePackId,
+					BasePackFingerprint);
+			if (bResultWritten) ArchiveRequest(ProcessingPath, RequestId);
 		}
 	}
 
 	static void RejectRequest(const FString& ProcessingPath, const FString& RequestId, const FString& ErrorCode, const FString& Message)
 	{
-		WriteResult(RequestId, TEXT("rejected"), ErrorCode, Message);
-		ArchiveRequest(ProcessingPath, RequestId);
+		if (WriteResult(RequestId, TEXT("rejected"), ErrorCode, Message))
+		{
+			ArchiveRequest(ProcessingPath, RequestId);
+		}
 		UE_LOG(LogTemp, Warning, TEXT("ReadAllandExplains SyncLive rejected %s: %s"), *RequestId, *Message);
 	}
 
@@ -643,6 +1069,7 @@ namespace ReadAllandExplainsSyncLive
 		if (GEditor && GEditor->PlayWorld) return true;
 
 		EnsureQueueDirectories();
+		RecoverInterruptedRequests();
 		TArray<FString> Files;
 		IFileManager::Get().FindFiles(Files, *(PendingDir() / TEXT("*.json")), true, false);
 		if (Files.IsEmpty()) return true;
@@ -773,18 +1200,17 @@ namespace ReadAllandExplainsSyncLive
 
 		FString PackDir;
 		const FBatchExportResult ExportResult = ExportContextPack(Roots, PackDir, DependencyDepth, RequestId, BasePackId);
-		const bool bComplete = ExportResult.SuccessCount > 0 && !PackDir.EndsWith(TEXT(".tmp"));
-		WriteResult(
+		const bool bResultWritten = WriteResult(
 			RequestId,
-			bComplete ? TEXT("complete") : TEXT("failed"),
-			bComplete ? FString() : TEXT("EXPORT_FAILED"),
-			bComplete ? TEXT("Targeted Context Pack completed.") : TEXT("Targeted Context Pack did not publish successfully."),
+			ExportResult.bPublished ? TEXT("complete") : TEXT("failed"),
+			ExportResult.bPublished ? FString() : TEXT("EXPORT_FAILED"),
+			ExportResult.bPublished ? TEXT("Targeted Context Pack completed.") : TEXT("Targeted Context Pack did not publish successfully."),
 			PackDir,
 			&ExportResult,
 			BasePackId,
 			BasePackFingerprint);
-		ArchiveRequest(ProcessingPath, RequestId);
-		UE_LOG(LogTemp, Display, TEXT("ReadAllandExplains SyncLive %s: request=%s output=%s"), bComplete ? TEXT("complete") : TEXT("failed"), *RequestId, *PackDir);
+		if (bResultWritten) ArchiveRequest(ProcessingPath, RequestId);
+		UE_LOG(LogTemp, Display, TEXT("ReadAllandExplains SyncLive %s: request=%s output=%s"), ExportResult.bPublished ? TEXT("complete") : TEXT("failed"), *RequestId, *PackDir);
 		return true;
 	}
 
@@ -808,17 +1234,22 @@ namespace ReadAllandExplainsSyncLive
 
 static void NotifyContextPackResult(const FBatchExportResult& Result, const FString& PackDir)
 {
+	const FText SummaryFormat = Result.bPublished
+		? LOCTEXT("ContextPackSummaryComplete", "AI Context Pack 生成完成：资产 {0}，失败 {1}，跳过 {2}。\n输出目录：{3}")
+		: LOCTEXT("ContextPackSummaryFailed", "AI Context Pack 未发布：资产 {0}，失败 {1}，跳过 {2}。\n诊断目录：{3}");
 	FNotificationInfo Info(FText::Format(
-		LOCTEXT("ContextPackSummary", "AI Context Pack 生成完成：资产 {0}，失败 {1}，跳过 {2}。\n输出目录：{3}"),
+		SummaryFormat,
 		FText::AsNumber(Result.SuccessCount),
 		FText::AsNumber(Result.FailedCount),
 		FText::AsNumber(Result.SkippedCount),
 		FText::FromString(PackDir)));
-	Info.ExpireDuration = Result.FailedCount > 0 ? 8.0f : 6.0f;
+	Info.ExpireDuration = Result.bPublished ? 6.0f : 10.0f;
 	Info.Hyperlink = FSimpleDelegate::CreateLambda([PackDir]() { FPlatformProcess::ExploreFolder(*PackDir); });
-	Info.HyperlinkText = LOCTEXT("OpenContextPackDir", "打开 Context Pack");
+	Info.HyperlinkText = Result.bPublished
+		? LOCTEXT("OpenContextPackDir", "打开 Context Pack")
+		: LOCTEXT("OpenFailedContextPackDir", "打开诊断目录");
 	FSlateNotificationManager::Get().AddNotification(Info);
-	if (Result.SuccessCount > 0) FPlatformProcess::ExploreFolder(*PackDir);
+	if (Result.bPublished) FPlatformProcess::ExploreFolder(*PackDir);
 }
 
 static TArray<FAssetData> ResolveConsoleAssets(const TArray<FString>& Args)
@@ -873,8 +1304,16 @@ static void ExportContextPackFromConsole(const TArray<FString>& Args)
 	}
 	FString PackDir;
 	const FBatchExportResult Result = ExportContextPack(Roots, PackDir);
-	UE_LOG(LogTemp, Display, TEXT("ReadAllandExplains Context Pack finished: success=%d failed=%d skipped=%d output=%s"),
-		Result.SuccessCount, Result.FailedCount, Result.SkippedCount, *PackDir);
+	if (Result.bPublished)
+	{
+		UE_LOG(LogTemp, Display, TEXT("ReadAllandExplains Context Pack published: success=%d failed=%d skipped=%d output=%s"),
+			Result.SuccessCount, Result.FailedCount, Result.SkippedCount, *PackDir);
+	}
+	else
+	{
+		UE_LOG(LogTemp, Error, TEXT("ReadAllandExplains Context Pack failed: success=%d failed=%d skipped=%d diagnostics=%s"),
+			Result.SuccessCount, Result.FailedCount, Result.SkippedCount, *PackDir);
+	}
 }
 
 static IConsoleObject* ExportAssetsConsoleCommand = nullptr;

@@ -4,6 +4,7 @@ import argparse
 import hashlib
 import json
 import os
+import stat
 import sys
 import uuid
 from datetime import datetime, timezone
@@ -214,6 +215,8 @@ class ContextPackStore:
             resolved.relative_to(self.packs_root.resolve())
         except ValueError as exc:
             raise RaeError("PACK_OUTSIDE_ROOT", "Pack must be inside the configured ContextPacks directory") from exc
+        if resolved.name.casefold().endswith(".tmp"):
+            raise RaeError("PACK_INCOMPLETE", "Temporary Context Pack directories are never readable", {"pack_path": str(resolved)})
         if not resolved.is_dir():
             raise RaeError("PACK_NOT_FOUND", f"Context Pack not found: {resolved}", {"pack_path": str(resolved)})
         if not (resolved / "context-pack.json").is_file():
@@ -223,8 +226,9 @@ class ContextPackStore:
     def _manifest(self, pack: Path, validate: bool = True) -> dict[str, Any]:
         manifest = self._cached_json(pack / "context-pack.json")
         if validate:
+            modern = "attemptedAssetCount" in manifest
             state = manifest.get("state")
-            if state not in (None, "complete"):
+            if (modern and state != "complete") or (not modern and state not in (None, "complete")):
                 raise RaeError("PACK_INCOMPLETE", f"Context Pack state is {state!r}", {"pack_id": pack.name, "state": state})
             schema = manifest.get("schemaVersion")
             if schema not in SUPPORTED_PACK_SCHEMAS:
@@ -233,26 +237,161 @@ class ContextPackStore:
                     f"Unsupported Context Pack schema: {schema}",
                     {"pack_id": pack.name, "supported": sorted(SUPPORTED_PACK_SCHEMAS)},
                 )
+            if modern and manifest.get("documentType") != "ReadAllandExplainsContextPack":
+                raise RaeError("PACK_INCOMPLETE", "Modern Context Pack documentType is invalid", {"pack_id": pack.name})
+            declared_pack_id = manifest.get("packId")
+            if (modern and declared_pack_id != pack.name) or (not modern and declared_pack_id is not None and declared_pack_id != pack.name):
+                raise RaeError("PACK_INCOMPLETE", "Manifest packId does not match its directory", {"pack_id": pack.name})
+            for count_field in ("failedCount", "skippedCount"):
+                count = manifest.get(count_field)
+                if (modern and (not isinstance(count, int) or isinstance(count, bool) or count != 0)) or (
+                    not modern and count is not None and (not isinstance(count, (int, float)) or isinstance(count, bool) or count != 0)
+                ):
+                    raise RaeError(
+                        "PACK_INCOMPLETE",
+                        f"Context Pack has {count_field}={count!r}",
+                        {"pack_id": pack.name, count_field: count},
+                    )
             files = manifest.get("files")
+            if modern and not isinstance(files, list):
+                raise RaeError("PACK_INCOMPLETE", "Modern Context Pack files must be an array", {"pack_id": pack.name})
             if isinstance(files, list):
                 pack_root = pack.resolve()
+                declared_paths: set[str] = set()
+                fingerprint_source: list[str] = []
                 for entry in files:
                     if not isinstance(entry, dict) or not entry.get("path"):
                         raise RaeError("PACK_INCOMPLETE", "Manifest contains an invalid file entry", {"pack_id": pack.name})
-                    file_path = (pack / str(entry["path"])).resolve()
+                    relative_path = str(entry["path"]).replace("\\", "/")
+                    path_key = relative_path.casefold()
+                    if path_key in declared_paths:
+                        raise RaeError("PACK_INCOMPLETE", "Manifest contains a duplicate file path", {"path": relative_path})
+                    declared_paths.add(path_key)
+                    file_path = (pack / relative_path).resolve()
                     try:
                         file_path.relative_to(pack_root)
                     except ValueError as exc:
-                        raise RaeError("PACK_INCOMPLETE", "Manifest file escapes the Context Pack", {"path": str(entry["path"])}) from exc
+                        raise RaeError("PACK_INCOMPLETE", "Manifest file escapes the Context Pack", {"path": relative_path}) from exc
                     if not file_path.is_file():
-                        raise RaeError("PACK_INCOMPLETE", "Manifest file is missing", {"path": str(entry["path"])})
+                        raise RaeError("PACK_INCOMPLETE", "Manifest file is missing", {"path": relative_path})
                     expected_size = entry.get("size")
-                    if isinstance(expected_size, (int, float)) and file_path.stat().st_size != int(expected_size):
+                    if not isinstance(expected_size, int) or isinstance(expected_size, bool) or expected_size < 0:
+                        raise RaeError("PACK_INCOMPLETE", "Manifest file size is invalid", {"path": relative_path})
+                    if file_path.stat().st_size != expected_size:
                         raise RaeError(
                             "PACK_INCOMPLETE",
                             "Manifest file size does not match",
-                            {"path": str(entry["path"]), "expected": int(expected_size), "actual": file_path.stat().st_size},
+                            {"path": relative_path, "expected": expected_size, "actual": file_path.stat().st_size},
                         )
+                    fingerprint = entry.get("fingerprint")
+                    if modern:
+                        if not isinstance(fingerprint, str) or not fingerprint.startswith("sha1:"):
+                            raise RaeError("PACK_INCOMPLETE", "Modern Manifest file fingerprint is invalid", {"path": relative_path})
+                        actual_fingerprint = "sha1:" + hashlib.sha1(file_path.read_bytes()).hexdigest()
+                        if fingerprint.casefold() != actual_fingerprint:
+                            raise RaeError(
+                                "PACK_INCOMPLETE",
+                                "Manifest file fingerprint does not match",
+                                {"path": relative_path, "expected": fingerprint, "actual": actual_fingerprint},
+                            )
+                        fingerprint_source.append(f"{relative_path}:{expected_size}:{actual_fingerprint.removeprefix('sha1:')}\n")
+                disk_paths = {
+                    path.relative_to(pack).as_posix().casefold()
+                    for path in pack.rglob("*")
+                    if path.is_file() and path.relative_to(pack).as_posix().casefold() != "context-pack.json"
+                }
+                if declared_paths != disk_paths:
+                    raise RaeError("PACK_INCOMPLETE", "Manifest file list does not match the Context Pack", {"pack_id": pack.name})
+                if modern:
+                    required_files = {"readme.md", "index.md", "index.json"}
+                    if not required_files.issubset(disk_paths):
+                        raise RaeError("PACK_INCOMPLETE", "Modern Context Pack is missing required files", {"pack_id": pack.name})
+                    expected_pack_fingerprint = "sha1:" + hashlib.sha1("".join(fingerprint_source).encode("utf-8")).hexdigest()
+                    if str(manifest.get("fingerprint", "")).casefold() != expected_pack_fingerprint:
+                        raise RaeError(
+                            "PACK_INCOMPLETE",
+                            "Context Pack fingerprint does not match its file manifest",
+                            {"pack_id": pack.name, "expected": expected_pack_fingerprint, "actual": manifest.get("fingerprint")},
+                        )
+            manifest_assets = manifest.get("assets")
+            index_path = pack / "index.json"
+            if modern:
+                attempted = manifest.get("attemptedAssetCount")
+                exported = manifest.get("exportedAssetCount")
+                roots = manifest.get("rootAssets")
+                if not isinstance(manifest_assets, list) or not index_path.is_file():
+                    raise RaeError("PACK_INCOMPLETE", "Modern Context Pack requires Manifest assets and index.json", {"pack_id": pack.name})
+                if not isinstance(attempted, int) or isinstance(attempted, bool) or attempted <= 0:
+                    raise RaeError("PACK_INCOMPLETE", "Modern Context Pack attemptedAssetCount is invalid", {"pack_id": pack.name})
+                if not isinstance(exported, int) or isinstance(exported, bool) or exported != attempted or exported != len(manifest_assets):
+                    raise RaeError("PACK_INCOMPLETE", "Modern Context Pack asset counts do not match", {"pack_id": pack.name})
+                if not isinstance(roots, list) or not roots or not all(isinstance(item, str) and item.startswith("/Game/") for item in roots):
+                    raise RaeError("PACK_INCOMPLETE", "Modern Context Pack rootAssets are invalid", {"pack_id": pack.name})
+            if isinstance(manifest_assets, list) and index_path.is_file():
+                index = self._cached_json(index_path)
+                index_assets = index.get("assets")
+                if not isinstance(index_assets, list):
+                    raise RaeError("PACK_INCOMPLETE", "index.json assets must be an array", {"pack_id": pack.name})
+                if modern:
+                    asset_count = index.get("assetCount")
+                    if not isinstance(asset_count, int) or isinstance(asset_count, bool) or asset_count != len(index_assets):
+                        raise RaeError("PACK_INCOMPLETE", "Modern index assetCount does not match assets", {"pack_id": pack.name})
+
+                def asset_map(items: list[Any], label: str) -> dict[str, tuple[str, str]]:
+                    result: dict[str, tuple[str, str]] = {}
+                    file_keys: set[str] = set()
+                    metadata_keys: set[str] = set()
+                    for item in items:
+                        if not isinstance(item, dict):
+                            raise RaeError("PACK_INCOMPLETE", f"{label} contains an invalid asset entry", {"pack_id": pack.name})
+                        object_path = item.get("objectPath")
+                        export_file = item.get("exportFile")
+                        metadata_file = item.get("metadataFile", "")
+                        if not isinstance(object_path, str) or not isinstance(export_file, str) or not export_file:
+                            raise RaeError("PACK_INCOMPLETE", f"{label} contains an invalid asset mapping", {"pack_id": pack.name})
+                        if modern and (not isinstance(metadata_file, str) or not metadata_file):
+                            raise RaeError("PACK_INCOMPLETE", f"{label} requires an explicit metadataFile", {"object_path": object_path})
+                        if object_path in result:
+                            raise RaeError("PACK_INCOMPLETE", f"{label} contains duplicate objectPath values", {"object_path": object_path})
+                        export_relative = export_file.replace("\\", "/")
+                        metadata_relative = str(metadata_file).replace("\\", "/")
+                        export_path = (pack / export_relative).resolve()
+                        try:
+                            export_path.relative_to(pack.resolve())
+                        except ValueError as exc:
+                            raise RaeError("PACK_INCOMPLETE", f"{label} exportFile escapes the Context Pack", {"path": export_file}) from exc
+                        if not export_path.is_file():
+                            raise RaeError("PACK_INCOMPLETE", f"{label} exportFile is missing", {"path": export_file})
+                        export_key = export_relative.casefold()
+                        if export_key in file_keys:
+                            raise RaeError("PACK_INCOMPLETE", f"{label} contains duplicate exportFile paths", {"path": export_file})
+                        file_keys.add(export_key)
+                        if metadata_relative:
+                            metadata_path = (pack / metadata_relative).resolve()
+                            try:
+                                metadata_path.relative_to(pack.resolve())
+                            except ValueError as exc:
+                                raise RaeError("PACK_INCOMPLETE", f"{label} metadataFile escapes the Context Pack", {"path": metadata_file}) from exc
+                            if not metadata_path.is_file():
+                                raise RaeError("PACK_INCOMPLETE", f"{label} metadataFile is missing", {"path": metadata_file})
+                            metadata = self._cached_json(metadata_path)
+                            if metadata.get("objectPath") != object_path:
+                                raise RaeError("PACK_INCOMPLETE", f"{label} metadata objectPath does not match", {"path": metadata_file})
+                            metadata_key = metadata_relative.casefold()
+                            if metadata_key in metadata_keys:
+                                raise RaeError("PACK_INCOMPLETE", f"{label} contains duplicate metadataFile paths", {"path": metadata_file})
+                            metadata_keys.add(metadata_key)
+                        result[object_path] = (export_relative, metadata_relative)
+                    return result
+
+                manifest_map = asset_map(manifest_assets, "Manifest")
+                index_map = asset_map(index_assets, "Index")
+                if manifest_map != index_map:
+                    raise RaeError("PACK_INCOMPLETE", "Manifest and index asset mappings do not match", {"pack_id": pack.name})
+                if modern:
+                    missing_roots = sorted(set(manifest["rootAssets"]) - set(manifest_map))
+                    if missing_roots:
+                        raise RaeError("PACK_INCOMPLETE", "Modern Context Pack root assets were not exported", {"missing_roots": missing_roots})
         return manifest
 
     def pack_info(self, pack: Path, validate: bool = True) -> tuple[dict[str, Any], list[dict[str, str]]]:
@@ -327,9 +466,29 @@ class ContextPackStore:
     def _relative(self, pack: Path, path: Path) -> str:
         return path.resolve().relative_to(pack.resolve()).as_posix()
 
+    @staticmethod
+    def _safe_pack_member(pack: Path, path: Path) -> Path:
+        try:
+            attributes = path.lstat().st_file_attributes
+        except AttributeError:
+            attributes = 0
+        except OSError as exc:
+            raise RaeError("PACK_INCOMPLETE", "Pack member is unavailable", {"path": str(path)}) from exc
+        if path.is_symlink() or attributes & stat.FILE_ATTRIBUTE_REPARSE_POINT:
+            raise RaeError("PACK_INCOMPLETE", "Pack links and reparse points are not supported", {"path": str(path)})
+        resolved = path.resolve()
+        try:
+            resolved.relative_to(pack.resolve())
+        except ValueError as exc:
+            raise RaeError("PACK_INCOMPLETE", "Pack file resolves outside its root", {"path": str(path)}) from exc
+        if not resolved.is_file():
+            raise RaeError("PACK_INCOMPLETE", "Pack member is not a regular file", {"path": str(path)})
+        return resolved
+
     def _metadata_map(self, pack: Path) -> dict[str, tuple[Path, dict[str, Any]]]:
         result: dict[str, tuple[Path, dict[str, Any]]] = {}
         for path in pack.rglob("*.meta.json"):
+            path = self._safe_pack_member(pack, path)
             try:
                 metadata = self._cached_json(path)
             except (OSError, RaeError):
@@ -339,6 +498,17 @@ class ContextPackStore:
                 if key:
                     result[str(key).casefold()] = (path, metadata)
         return result
+
+    def _resolve_metadata_file(self, pack: Path, record: dict[str, Any]) -> tuple[Path, dict[str, Any]] | None:
+        declared = record.get("metadataFile")
+        if not declared:
+            return None
+        path = self._safe_pack_member(pack, pack / str(declared))
+        metadata = self._cached_json(path)
+        object_path = str(record.get("objectPath", ""))
+        if object_path and metadata.get("objectPath") != object_path:
+            raise RaeError("PACK_INCOMPLETE", "Metadata objectPath does not match the index", {"path": str(declared)})
+        return path, metadata
 
     def _resolve_readable_file(self, pack: Path, record: dict[str, Any]) -> Path | None:
         declared = str(record.get("exportFile", ""))
@@ -350,9 +520,13 @@ class ContextPackStore:
             except ValueError:
                 path = Path()
             if path.is_file():
-                return path
+                return self._safe_pack_member(pack, path)
         name = str(record.get("name", ""))
-        matches = [path for path in pack.rglob(f"{name}_Readable*") if path.suffix.casefold() in {".md", ".txt"}]
+        matches = [
+            self._safe_pack_member(pack, path)
+            for path in pack.rglob(f"{name}_Readable*")
+            if path.suffix.casefold() in {".md", ".txt"}
+        ]
         return matches[0] if matches else None
 
     def assets(self, pack_path: str | None = None) -> tuple[Path, list[dict[str, Any]]]:
@@ -368,7 +542,9 @@ class ContextPackStore:
             if not isinstance(raw, dict):
                 continue
             record = dict(raw)
-            match = metadata_map.get(str(record.get("objectPath", "")).casefold()) or metadata_map.get(str(record.get("name", "")).casefold())
+            match = self._resolve_metadata_file(pack, record)
+            if match is None:
+                match = metadata_map.get(str(record.get("objectPath", "")).casefold()) or metadata_map.get(str(record.get("name", "")).casefold())
             if match:
                 record["_metadata_path"] = str(match[0])
                 record["_metadata"] = match[1]

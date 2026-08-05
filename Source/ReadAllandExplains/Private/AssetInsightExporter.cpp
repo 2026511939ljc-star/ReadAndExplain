@@ -13,6 +13,7 @@
 #include "Engine/Blueprint.h"
 #include "Engine/CurveTable.h"
 #include "Engine/DataTable.h"
+#include "Engine/DataAsset.h"
 #include "Engine/StaticMesh.h"
 #include "Engine/Texture.h"
 #include "Curves/RichCurve.h"
@@ -1204,11 +1205,14 @@ void FAssetInsightExporter::CollectParameterClues(UObject* Asset, TArray<FReadAl
 	{
 		if (const UClass* GeneratedClass = Blueprint->GeneratedClass)
 		{
+			const UObject* CDO = GeneratedClass->GetDefaultObject();
 			for (TFieldIterator<FProperty> It(GeneratedClass, EFieldIteratorFlags::ExcludeSuper); It; ++It)
 			{
 				const FProperty* Property = *It;
 				if (!Property || Property->HasAnyPropertyFlags(CPF_Transient | CPF_Deprecated)) continue;
-				OutClues.Add({Property->GetName(), TEXT("蓝图变量"), Property->GetCPPType()});
+				FString PropValue = AssetInsightImpl::ExportReflectedValue(Property, CDO);
+				if (PropValue.IsEmpty()) PropValue = Property->GetCPPType();
+				OutClues.Add({Property->GetName(), TEXT("蓝图变量"), PropValue});
 			}
 		}
 	}
@@ -1281,6 +1285,24 @@ void FAssetInsightExporter::CollectParameterClues(UObject* Asset, TArray<FReadAl
 			OutClues.Add({Pair.Key.ToString(), TEXT("曲线名称"), Pair.Value ? FString::Printf(TEXT("%d keys"), Pair.Value->GetNumKeys()) : TEXT("<空>")});
 		}
 	}
+	else if (const UEnum* Enum = Cast<UEnum>(Asset))
+	{
+		for (int32 Idx = 0; Idx < Enum->NumEnums(); ++Idx)
+		{
+			OutClues.Add({Enum->GetDisplayNameTextByIndex(Idx).ToString(), TEXT("枚举条目"), LexToString(Enum->GetValueByIndex(Idx))});
+		}
+	}
+	else if (const UDataAsset* DataAsset = Cast<UDataAsset>(Asset))
+	{
+		for (TFieldIterator<FProperty> It(DataAsset->GetClass(), EFieldIteratorFlags::ExcludeSuper); It; ++It)
+		{
+			const FProperty* Property = *It;
+			if (!Property || Property->HasAnyPropertyFlags(CPF_Transient | CPF_Deprecated)) continue;
+			FString PropValue = AssetInsightImpl::ExportReflectedValue(Property, DataAsset);
+			if (PropValue.IsEmpty()) PropValue = TEXT("<无默认值>");
+			OutClues.Add({Property->GetName(), TEXT("DataAsset 属性"), PropValue});
+		}
+	}
 
 	AssetInsightImpl::SortUniqueClues(OutClues);
 }
@@ -1326,10 +1348,18 @@ FString FAssetInsightExporter::BuildMetadataJson(const FAssetData& AssetData, UO
 
 FString FAssetInsightExporter::BuildBatchIndex(const TArray<FAssetData>& Assets, const TArray<FString>& SavedPaths)
 {
+	return BuildBatchIndex(Assets, SavedPaths, TArray<FString>());
+}
+
+FString FAssetInsightExporter::BuildBatchIndex(
+	const TArray<FAssetData>& Assets,
+	const TArray<FString>& SavedPaths,
+	const TArray<FString>& MetadataPaths)
+{
 	FString Out;
 	Out += TEXT("# ReadAllandExplains 批量导出索引\n\n");
 	Out += TEXT("你好同学，我是 ReadAllandExplains。下面先把这批资产放到同一张关系表里，方便你追问“谁控制了谁”和“这个参数最后去了哪里”。\n\n");
-	Out += TEXT("## 资产列表\n\n| 资产 | 类型 | 路径 | 导出文件 |\n|------|------|------|----------|\n");
+	Out += TEXT("## 资产列表\n\n| 资产 | 类型 | 路径 | 导出文件 | Metadata |\n|------|------|------|----------|----------|\n");
 
 	TMap<FString, TArray<FString>> AssetsByParameter;
 	TMap<FString, TArray<FString>> AssetPathsByParameter;
@@ -1339,10 +1369,12 @@ FString FAssetInsightExporter::BuildBatchIndex(const TArray<FAssetData>& Assets,
 	{
 		UObject* Asset = Assets[Index].GetAsset();
 		const FString SavedPath = SavedPaths.IsValidIndex(Index) ? SavedPaths[Index] : TEXT("<未知>");
+		const FString MetadataPath = MetadataPaths.IsValidIndex(Index) ? MetadataPaths[Index] : TEXT("<未生成>");
 		Out += TEXT("| ") + FAssetTextSnapshot::MarkdownCell(Assets[Index].AssetName.ToString())
 			+ TEXT(" | ") + FAssetTextSnapshot::MarkdownCell(AssetInsightImpl::AssetKind(Asset))
 			+ TEXT(" | ") + FAssetTextSnapshot::MarkdownCell(Assets[Index].GetObjectPathString())
-			+ TEXT(" | ") + FAssetTextSnapshot::MarkdownCell(SavedPath) + TEXT(" |\n");
+			+ TEXT(" | ") + FAssetTextSnapshot::MarkdownCell(SavedPath)
+			+ TEXT(" | ") + FAssetTextSnapshot::MarkdownCell(MetadataPath) + TEXT(" |\n");
 
 		TArray<FReadAllParameterClue> Clues;
 		CollectParameterClues(Asset, Clues);
@@ -1403,10 +1435,17 @@ FString FAssetInsightExporter::BuildBatchIndex(const TArray<FAssetData>& Assets,
 
 FString FAssetInsightExporter::BuildBatchIndexJson(const TArray<FAssetData>& Assets, const TArray<FString>& SavedPaths)
 {
+	return BuildBatchIndexJson(Assets, SavedPaths, TArray<FString>());
+}
+
+FString FAssetInsightExporter::BuildBatchIndexJson(
+	const TArray<FAssetData>& Assets,
+	const TArray<FString>& SavedPaths,
+	const TArray<FString>& MetadataPaths)
+{
 	TSharedRef<FJsonObject> Root = MakeShared<FJsonObject>();
 	Root->SetNumberField(TEXT("schemaVersion"), 1);
 	Root->SetStringField(TEXT("documentType"), TEXT("ReadAllandExplainsBatchIndex"));
-	Root->SetNumberField(TEXT("assetCount"), Assets.Num());
 
 	FAssetRegistryModule& Module = FModuleManager::LoadModuleChecked<FAssetRegistryModule>(TEXT("AssetRegistry"));
 	IAssetRegistry& Registry = Module.Get();
@@ -1424,6 +1463,10 @@ FString FAssetInsightExporter::BuildBatchIndexJson(const TArray<FAssetData>& Ass
 		Entry->SetStringField(TEXT("classPath"), Asset->GetClass()->GetPathName());
 		Entry->SetStringField(TEXT("assetKind"), AssetInsightImpl::AssetKind(Asset));
 		Entry->SetStringField(TEXT("exportFile"), SavedPaths.IsValidIndex(Index) ? SavedPaths[Index] : FString());
+		if (MetadataPaths.IsValidIndex(Index) && !MetadataPaths[Index].IsEmpty())
+		{
+			Entry->SetStringField(TEXT("metadataFile"), MetadataPaths[Index]);
+		}
 
 		TArray<FReadAllParameterClue> Clues;
 		CollectParameterClues(Asset, Clues);
@@ -1455,6 +1498,7 @@ FString FAssetInsightExporter::BuildBatchIndexJson(const TArray<FAssetData>& Ass
 		AssetValues.Add(MakeShared<FJsonValueObject>(Entry));
 	}
 
+	Root->SetNumberField(TEXT("assetCount"), AssetValues.Num());
 	Root->SetArrayField(TEXT("assets"), AssetValues);
 	FString Output;
 	TSharedRef<TJsonWriter<TCHAR, TPrettyJsonPrintPolicy<TCHAR>>> Writer = TJsonWriterFactory<TCHAR, TPrettyJsonPrintPolicy<TCHAR>>::Create(&Output);

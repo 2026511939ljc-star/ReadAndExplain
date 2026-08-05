@@ -16,6 +16,14 @@ public:
 	static FString DecorateDocument(const FAssetData& AssetData, UObject* Asset, const FString& TechnicalDocument);
 	static FString BuildMetadataJson(const FAssetData& AssetData, UObject* Asset, const FString& TechnicalDocument);
 	static FString BuildBatchIndex(const TArray<FAssetData>& Assets, const TArray<FString>& SavedPaths);
+	static FString BuildBatchIndex(
+		const TArray<FAssetData>& Assets,
+		const TArray<FString>& SavedPaths,
+		const TArray<FString>& MetadataPaths);
 	static FString BuildBatchIndexJson(const TArray<FAssetData>& Assets, const TArray<FString>& SavedPaths);
+	static FString BuildBatchIndexJson(
+		const TArray<FAssetData>& Assets,
+		const TArray<FString>& SavedPaths,
+		const TArray<FString>& MetadataPaths);
 	static void CollectParameterClues(UObject* Asset, TArray<FReadAllParameterClue>& OutClues);
 };
