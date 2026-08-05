@@ -45,6 +45,7 @@
 #include "Materials/MaterialExpressionFunctionInput.h"
 #include "Materials/MaterialExpressionFunctionOutput.h"
 #include "Materials/MaterialExpressionComment.h"
+#include "Materials/MaterialExpressionCustom.h"
 #include "Materials/MaterialFunction.h"
 #include "Materials/MaterialParameterCollection.h"
 #include "Materials/MaterialAttributeDefinitionMap.h"
@@ -589,6 +590,33 @@ namespace
 			const FString A = EmitValueForInput(Ctx, &App->A);
 			const FString B = EmitValueForInput(Ctx, &App->B);
 			RHS = FString::Printf(TEXT("Append(%s, %s)"), *A, *B);
+		}
+		else if (const UMaterialExpressionCustom* Custom = Cast<UMaterialExpressionCustom>(Expr))
+		{
+			FString EscapedCode = Custom->Code;
+			EscapedCode.ReplaceInline(TEXT("\r\n"), TEXT("\\n"));
+			EscapedCode.ReplaceInline(TEXT("\n"), TEXT("\\n"));
+			EscapedCode.ReplaceInline(TEXT("\r"), TEXT("\\n"));
+			EscapedCode.ReplaceInline(TEXT("\""), TEXT("\\\""));
+
+			TArray<FString> InputArgs;
+			for (int32 i = 0; i < Custom->Inputs.Num(); ++i)
+			{
+				const FCustomInput& CInput = Custom->Inputs[i];
+				FString InputName = CInput.InputName;
+				if (InputName.IsEmpty()) InputName = FString::Printf(TEXT("input%d"), i);
+				InputArgs.Add(FString::Printf(TEXT("Input(\"%s\", %s)"),
+					*EscapeForQuotedString(InputName),
+					*EmitValueForInput(Ctx, &CInput.Input)));
+			}
+			const FString JoinedInputs = FString::Join(InputArgs, TEXT(", "));
+			FString OutType = Custom->OutputType;
+			if (OutType.IsEmpty()) OutType = TEXT("Float3");
+			RHS = FString::Printf(TEXT("CustomHLSL(\"%s\", \"%s\"%s%s)"),
+				*EscapeForQuotedString(OutType),
+				*EscapedCode,
+				InputArgs.Num() > 0 ? TEXT(", ") : TEXT(""),
+				*JoinedInputs);
 		}
 		else
 		{
