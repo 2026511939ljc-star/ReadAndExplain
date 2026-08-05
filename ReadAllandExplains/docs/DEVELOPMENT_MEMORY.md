@@ -16,14 +16,15 @@ ReadAllandExplains 是 UE 技术美术资产的 AI Context Compiler。核心流�
 ## 当前基线
 
 - 开发分支：`iteration/vnext`
-- 最终候选提交：`08f5b9248c4051486ab151b0c32d9e6c847a05ea`
-- 候选回滚标签：`backup/v4.7.0-rc-20260805-08f5b92`
+- 正式发布提交：`df82485ed260cd25862a006681df757cf477e400`
+- 正式标签：`v4.7.0`
+- 正式 Release：`https://github.com/2026511939ljc-star/ReadAndExplain/releases/tag/v4.7.0`
+- 最终候选回滚标签：`backup/v4.7.0-final-20260805-d9367f5`
 - Task 4 检查点：`backup/task4-checkpoint-20260805-73825d9`
 - 插件版本元数据：`4.7.0`
 - UE 目标环境：UE `5.7`，Win64
-- 发布分支：`main`，仅在全部门禁通过且获得用户许可后更新
 
-需要回滚时，优先从候选标签或 Task 4 检查点创建恢复分支，不重写已发布历史。
+需要回滚时，优先从正式标签、最终候选标签或 Task 4 检查点创建恢复分支，不重写已发布历史。
 
 ## 已完成事项
 
@@ -85,7 +86,7 @@ Task 4 的核心是测试基础设施，不是 MCP 或 Skill 功能扩展。
 
 ## 当前执行状态
 
-`2026-08-05`：用户已授权完成编译与 4.7 正式发布。开发候选已提交为 `08f5b92` 并推送至 `origin/iteration/vnext`，正式发布流程正在执行。
+`2026-08-05`：ReadAllandExplains `4.7.0` 已正式发布。`origin/main` 与标签 `v4.7.0` 均指向 `df82485`，GitHub Release 为非草稿、非预发布状态。
 
 已完成：
 
@@ -107,5 +108,9 @@ Task 4 的核心是测试基础设施，不是 MCP 或 Skill 功能扩展。
 - 10 份最终报告均为 `ok=true`、`exitCode=0`、`failed=0`，新增、修改、缺失文件均为 `0`；Git HEAD 均为 `08f5b92`、`dirty=false`，加载 DLL 哈希一致。
 - 受管 Golden baseline 已批准新增 `attemptedAssetCount`、`metadataFile` 与 Index Metadata 列。
 - `git diff --check`：通过。
+- 正式 ZIP：`ReadAllandExplains_4.7.0_UE5.7_Win64.zip`，`455395` 字节，SHA-256 `85DABCC8021B78AD8D10A86F3EEEFED762E5A5A31AB306E6098D210D87607D3F`。
+- ZIP 内 DLL 与真实回归加载模块一致，SHA-256 `B68EEB4B05AC02B8149122763E7D45DB0E92A8B0FD52736ECE75DCACA686EB5B`。
+- ZIP 共 39 个文件，无双层插件目录、PDB、Intermediate、Tests、缓存、开发记忆、本机路径或凭据。
+- 公开下载端点返回 HTTP 200，下载后 ZIP 哈希复算一致。
 
-当前仅开发记忆的最终状态更新尚待提交；正式 ZIP、`main`、`v4.7.0` 标签与 GitHub Release 正在按用户许可执行。
+4.7 正式发布已经完成；后续开发从 `iteration/vnext` 继续，不移动或重写 `v4.7.0` 标签。
