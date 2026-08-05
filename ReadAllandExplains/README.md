@@ -1,6 +1,6 @@
 # ReadAllandExplains
 
-[![Version](https://img.shields.io/badge/version-4.6.0-blue)](https://github.com/2026511939ljc-star/ReadAndExplain/releases)
+[![Version](https://img.shields.io/badge/version-4.7.0-blue)](https://github.com/2026511939ljc-star/ReadAndExplain/releases)
 [![UE5](https://img.shields.io/badge/Unreal%20Engine-5.7-black)](https://www.unrealengine.com/)
 [![Platform](https://img.shields.io/badge/platform-Win64-lightgrey)]()
 [![License](https://img.shields.io/badge/license-UE%20EULA-orange)](https://www.unrealengine.com/en-US/eula)
@@ -17,7 +17,7 @@ ReadAllandExplains 将 Blueprint、Material、Niagara 等资产导出为便于�
 
 ### 核心特性
 
-> `iteration/vnext` 开发线在 `v4.6.0` 基线上新增 Blueprint CDO、Enum、DataAsset 与 Material Custom HLSL 导出，已通过 UE 5.7 编译验证；这些增量尚未进入现有 `v4.6.0` 发布包。
+> `v4.7.0` 在 4.6 可信查询与 SyncLive Lite 基础上，新增 Blueprint CDO、Enum、DataAsset、Material Custom HLSL、Golden Pack 回归，以及严格的 Context Pack 完整性事务。
 
 - **统一 Schema 2 图 IR**：材质节点/Pin/Link 与蓝图执行流进入统一图中间表示，Markdown 与 JSON 共用同一 IR 生成。
 - **Niagara 深度导出**：Renderer 明细、曲线原始 Key/插值/切线/外推、项目自定义模块递归图（深度 4、循环去重），曲线指纹去重并保留 `usedBy` 来源。
@@ -28,7 +28,9 @@ ReadAllandExplains 将 Blueprint、Material、Niagara 等资产导出为便于�
 - **SyncLive Lite**：用户批准补充计划后，MCP 可向正在运行的 UE 编辑器提交 1–5 个 `/Game/` 资产的定向静态补快照请求，原子落盘、状态机管理、PIE 暂停。
 - **CodeBuddy 原生接入**：插件包含 1 个 Command、1 个 Skill、1 个只读 MCP，自动发现当前或嵌套 UE 项目导出目录。
 - **可信查询层**：统一 `rae.mcp/1.0` Envelope、Evidence 证据链、稳定错误码、分页、`structuredContent`、`outputSchema` 与只读 Tool Annotations。
-- **原子快照**：Context Pack 采用 `.tmp` 写入 → `complete` 重命名发布，Manifest 含包内相对路径、文件大小和 BLAKE3-160 指纹。
+- **严格完整快照**：只有全部资产、Metadata、README、Index、Manifest 和最终目录发布成功时，Context Pack 才标记为 `complete`；失败 Pack 保留在 `.tmp` 并提供诊断错误。
+- **同名资产安全**：不同包路径下的同名资产使用稳定对象路径哈希消歧，Index 与 Manifest 明确绑定正文和 Metadata。
+- **Golden Pack 回归**：规范化比较、受管 Baseline、机器可读报告和运行来源追踪，为真实 UE 资产建立发布质量门禁。
 
 ### 支持的资产类型
 
@@ -36,7 +38,7 @@ ReadAllandExplains 将 Blueprint、Material、Niagara 等资产导出为便于�
 |------|----------|------|
 | Blueprint | `_ReadableCode.txt` + `.meta.json` | 蓝图执行流展开 |
 | Material / Material Instance | `_ReadableMaterial.md` + `.meta.json` | 节点图 IR + 参数 |
-| Material Function | `_ReadableMaterial.md` + `.meta.json` | 复用材质导出器 |
+| Material Function | `_ReadableMaterialFunction.md` + `.meta.json` | 复用材质导出器 |
 | Niagara System / Emitter / Script | `_ReadableNiagara.md` + `.meta.json` | Renderer + 曲线 + 模块递归图 |
 | Enum | `_ReadableEnum.md` + `.meta.json` | 枚举条目显示名称与 64 位值 |
 | DataAsset | `_ReadableDataAsset.md` + `.meta.json` | 当前类实例属性进入参数线索；Full/Reconstruction 模式追加详细反射表 |
@@ -45,10 +47,12 @@ ReadAllandExplains 将 Blueprint、Material、Niagara 等资产导出为便于�
 
 ### 安装
 
-1. 下载 [最新 Release](https://github.com/2026511939ljc-star/ReadAndExplain/releases) 的 ZIP 包。
-2. 解压到 UE 项目的 `Plugins/ReadAllandExplains` 目录。
-3. 用 Unreal Engine 5.7 打开项目，启用插件。
-4. 重启编辑器。
+1. 关闭 Unreal Editor，下载 [最新 Release](https://github.com/2026511939ljc-star/ReadAndExplain/releases) 的 ZIP 包。
+2. 解压并确认描述符位于 `<YourProject>/Plugins/ReadAllandExplains/ReadAllandExplains.uplugin`。
+3. 用 Unreal Engine 5.7 打开项目，启用插件并按提示重启。
+4. 如需 CodeBuddy/MCP，请安装 Python 3.9+；本版本不需要 npm 或第三方 Python 依赖。
+
+完整安装、升级、验证、卸载与故障排查见 [安装指南](docs/INSTALLATION.md)。
 
 ### 使用
 
@@ -104,7 +108,7 @@ python -m unittest discover -s Tests/MCP -p "test_*.py" -v
 python -m unittest discover -s Tests/Golden -p "test_*.py" -v
 
 # 真实 UE 资产回归（先关闭编辑器，并创建本地 cases 配置）
-powershell -NoProfile -ExecutionPolicy Bypass -File Scripts/RunGoldenPackRegression.ps1 -Project "D:/UE5/Trans/Trans.uproject" -Cases "Tests/Golden/cases.trans.local.json"
+powershell -NoProfile -ExecutionPolicy Bypass -File Scripts/RunGoldenPackRegression.ps1 -Project "D:/YourProject/YourProject.uproject" -Cases "Tests/Golden/cases.local.json"
 
 # CodeBuddy 插件验证
 codebuddy plugin validate .
@@ -124,7 +128,7 @@ ReadAllandExplains exports Blueprint, Material, and Niagara assets as human-read
 
 ### Key Features
 
-> The `iteration/vnext` development line adds Blueprint CDO, Enum, DataAsset, and Material Custom HLSL export on top of `v4.6.0`. These increments pass UE 5.7 compilation but are not included in the existing `v4.6.0` release package.
+> `v4.7.0` builds on the trustworthy 4.6 query layer and SyncLive Lite with Blueprint CDO, Enum, DataAsset, Material Custom HLSL, Golden Pack regression, and strict Context Pack integrity transactions.
 
 - **Unified Schema 2 Graph IR**: Material nodes/Pins/Links and Blueprint execution flow enter a unified graph intermediate representation; Markdown and JSON share the same IR.
 - **Deep Niagara Export**: Renderer details, curve raw Key/interpolation/tangent/extrapolation, project custom module recursive graphs (depth 4, cycle-deduplicated), curve fingerprint deduplication with `usedBy` provenance.
@@ -135,7 +139,9 @@ ReadAllandExplains exports Blueprint, Material, and Niagara assets as human-read
 - **SyncLive Lite**: After user approval, MCP can submit targeted static snapshot requests (1–5 `/Game/` assets) to a running UE editor, with atomic file writes, state machine management, and PIE pause.
 - **CodeBuddy Native Integration**: Plugin includes 1 Command, 1 Skill, and 1 read-only MCP, with automatic discovery of current or nested UE project export directories.
 - **Trustworthy Query Layer**: Unified `rae.mcp/1.0` Envelope, Evidence chain, stable error codes, pagination, `structuredContent`, `outputSchema`, and read-only Tool Annotations.
-- **Atomic Snapshots**: Context Packs use `.tmp` write → `complete` rename publishing; Manifest includes pack-relative paths, file sizes, and BLAKE3-160 fingerprints.
+- **Strict Complete Snapshots**: A Pack becomes `complete` only after every asset, Metadata file, README, Index, Manifest, and final directory publication succeeds; failed Packs remain in `.tmp` with diagnostics.
+- **Safe Duplicate Names**: Same-name assets from different package paths receive deterministic object-path-hash suffixes, with explicit document/Metadata mappings in Index and Manifest.
+- **Golden Pack Regression**: Canonical comparison, managed baselines, machine-readable reports, and provenance provide a real-asset release quality gate.
 
 ### Supported Asset Types
 
@@ -143,7 +149,7 @@ ReadAllandExplains exports Blueprint, Material, and Niagara assets as human-read
 |------|-------------|-------------|
 | Blueprint | `_ReadableCode.txt` + `.meta.json` | Execution flow expansion |
 | Material / Material Instance | `_ReadableMaterial.md` + `.meta.json` | Node graph IR + parameters |
-| Material Function | `_ReadableMaterial.md` + `.meta.json` | Reuses material exporter |
+| Material Function | `_ReadableMaterialFunction.md` + `.meta.json` | Reuses material exporter |
 | Niagara System / Emitter / Script | `_ReadableNiagara.md` + `.meta.json` | Renderer + curves + module recursive graph |
 | Enum | `_ReadableEnum.md` + `.meta.json` | Entry display names and 64-bit values |
 | DataAsset | `_ReadableDataAsset.md` + `.meta.json` | Current-class instance properties in parameter clues; detailed reflection in Full/Reconstruction modes |
@@ -152,10 +158,12 @@ ReadAllandExplains exports Blueprint, Material, and Niagara assets as human-read
 
 ### Installation
 
-1. Download the latest [Release ZIP](https://github.com/2026511939ljc-star/ReadAndExplain/releases).
-2. Extract to your UE project's `Plugins/ReadAllandExplains` directory.
-3. Open the project with Unreal Engine 5.7 and enable the plugin.
-4. Restart the editor.
+1. Close Unreal Editor and download the latest [Release ZIP](https://github.com/2026511939ljc-star/ReadAndExplain/releases).
+2. Extract it so the descriptor is `<YourProject>/Plugins/ReadAllandExplains/ReadAllandExplains.uplugin`.
+3. Open the project with Unreal Engine 5.7, enable the plugin, and restart if requested.
+4. CodeBuddy/MCP requires Python 3.9+; this release requires neither npm nor third-party Python packages.
+
+See the full [Installation Guide](docs/INSTALLATION.md) for upgrade, verification, uninstall, and troubleshooting steps.
 
 ### Usage
 
@@ -211,7 +219,7 @@ python -m unittest discover -s Tests/MCP -p "test_*.py" -v
 python -m unittest discover -s Tests/Golden -p "test_*.py" -v
 
 # Real UE asset regression (close the editor and create a local cases config first)
-powershell -NoProfile -ExecutionPolicy Bypass -File Scripts/RunGoldenPackRegression.ps1 -Project "D:/UE5/Trans/Trans.uproject" -Cases "Tests/Golden/cases.trans.local.json"
+powershell -NoProfile -ExecutionPolicy Bypass -File Scripts/RunGoldenPackRegression.ps1 -Project "D:/YourProject/YourProject.uproject" -Cases "Tests/Golden/cases.local.json"
 
 # CodeBuddy plugin validation
 codebuddy plugin validate .
@@ -221,7 +229,8 @@ codebuddy plugin validate .
 
 - Context Pack only recursively exports supported `/Game/` project assets; engine content is listed in dependencies but not exported.
 - SyncLive Lite requires a running UE editor with the plugin loaded; paused during PIE. It only generates static supplemental Packs, not a real-time runtime bridge.
-- Full parameter-level DAG, runtime observation, reverse import, and Marketplace release are not yet complete.
+- Supplemental Packs are independent snapshots; Base + Delta overlay queries are planned for a later release.
+- Full parameter-level DAG, runtime observation, reverse import, and Marketplace publication are not yet complete.
 
 ### License
 

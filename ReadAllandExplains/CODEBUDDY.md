@@ -54,4 +54,4 @@ codebuddy --plugin-dir .
 /reload-plugins
 ```
 
-当前预览版要求本机 `python` 可从 `PATH` 调用。正式 npm/Node 独立运行时将在后续产品化版本处理，不阻塞当前 CodeBuddy 逻辑测试。
+ReadAllandExplains 4.7.0 要求本机 `python` 3.9 或更高版本可从 `PATH` 调用。MCP 仅使用 Python 标准库，不需要 npm 或额外 Python 包；独立 Node 运行时可在后续版本提供。

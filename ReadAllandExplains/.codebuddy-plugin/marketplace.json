@@ -8,8 +8,8 @@
     {
       "name": "readallandexplains",
       "source": ".",
-      "description": "Progressive Unreal Engine analysis with permission-gated SyncLive Lite targeted snapshots.",
-      "version": "4.6.0",
+      "description": "Progressive Unreal Engine analysis with strict Context Pack integrity and permission-gated SyncLive Lite.",
+      "version": "4.7.0",
       "category": "game-development",
       "repository": "https://github.com/2026511939ljc-star/ReadAndExplain"
     }

@@ -46,10 +46,15 @@ class GoldenRegressionTests(unittest.TestCase):
             {
                 "path": relative_path,
                 "size": (root / relative_path).stat().st_size,
-                "fingerprint": f"blake3-160:{hashlib.sha1(relative_path.encode('utf-8')).hexdigest()}",
+                "fingerprint": "sha1:" + hashlib.sha1((root / relative_path).read_bytes()).hexdigest(),
             }
             for relative_path in relative_files
         ]
+        fingerprint_source = "".join(
+            f"{item['path']}:{item['size']}:{item['fingerprint'].split(':', 1)[1]}\n"
+            for item in manifest["files"]
+        )
+        manifest["fingerprint"] = "sha1:" + hashlib.sha1(fingerprint_source.encode("utf-8")).hexdigest()
         self._dump(manifest_path, manifest)
 
     def _write_pack(
@@ -57,7 +62,6 @@ class GoldenRegressionTests(unittest.TestCase):
         root: Path,
         pack_id: str = "ContextPack_First",
         created: str = "2026-08-05T00:00:00Z",
-        fingerprint: str = "blake3-160:first",
         reverse_sets: bool = False,
     ) -> None:
         dependencies = ["/Game/Test/M_Water.M_Water", "/Game/Test/M_Foam.M_Foam"]
@@ -66,6 +70,7 @@ class GoldenRegressionTests(unittest.TestCase):
                 "name": "NS_Water",
                 "objectPath": "/Game/Test/NS_Water.NS_Water",
                 "exportFile": "Niagara/NS_Water_ReadableNiagara.md",
+                "metadataFile": "Niagara/NS_Water.meta.json",
                 "dependencies": dependencies,
                 "referencers": [],
             }
@@ -118,10 +123,12 @@ class GoldenRegressionTests(unittest.TestCase):
         readable = root / "Niagara" / "NS_Water_ReadableNiagara.md"
         readable.parent.mkdir(parents=True, exist_ok=True)
         readable.write_text("# NS_Water\n\nRequired Golden Marker\n", encoding="utf-8")
+        (root / "README.md").write_text("# Context Pack\n", encoding="utf-8")
+        (root / "index.md").write_text("# Index\n", encoding="utf-8")
         relative_files = [
             path.relative_to(root).as_posix()
             for path in root.rglob("*")
-            if path.is_file()
+            if path.is_file() and path != root / "context-pack.json"
         ]
         if reverse_sets:
             relative_files.reverse()
@@ -129,20 +136,25 @@ class GoldenRegressionTests(unittest.TestCase):
             {
                 "path": relative_path,
                 "size": (root / relative_path).stat().st_size,
-                "fingerprint": f"blake3-160:{hashlib.sha1(relative_path.encode('utf-8')).hexdigest()}",
+                "fingerprint": "sha1:" + hashlib.sha1((root / relative_path).read_bytes()).hexdigest(),
             }
             for relative_path in relative_files
         ]
+        fingerprint_source = "".join(
+            f"{item['path']}:{item['size']}:{item['fingerprint'].split(':', 1)[1]}\n"
+            for item in files
+        )
         manifest = {
             "schemaVersion": 1,
             "documentType": "ReadAllandExplainsContextPack",
             "packId": pack_id,
             "state": "complete",
             "createdUtc": created,
-            "fingerprint": fingerprint,
+            "fingerprint": "sha1:" + hashlib.sha1(fingerprint_source.encode("utf-8")).hexdigest(),
             "originRequestId": f"request-{pack_id}",
             "basePackId": f"base-{pack_id}",
             "dependencyDepth": 1,
+            "attemptedAssetCount": 1,
             "exportedAssetCount": 1,
             "failedCount": 0,
             "skippedCount": 0,
@@ -153,6 +165,7 @@ class GoldenRegressionTests(unittest.TestCase):
                     "objectPath": "/Game/Test/NS_Water.NS_Water",
                     "packageName": "/Game/Test/NS_Water",
                     "exportFile": "Niagara/NS_Water_ReadableNiagara.md",
+                    "metadataFile": "Niagara/NS_Water.meta.json",
                 }
             ],
         }
@@ -165,14 +178,8 @@ class GoldenRegressionTests(unittest.TestCase):
             second,
             pack_id="ContextPack_Second",
             created="2026-08-05T12:34:56Z",
-            fingerprint="blake3-160:second",
             reverse_sets=True,
         )
-        manifest_path = second / "context-pack.json"
-        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-        for item in manifest["files"]:
-            item["fingerprint"] = "blake3-160:" + "f" * 40
-        self._dump(manifest_path, manifest)
 
         result = golden.compare_packs(second, self.baseline)
 
@@ -198,8 +205,12 @@ class GoldenRegressionTests(unittest.TestCase):
         self.assertEqual(["Niagara/NS_Water.meta.json"], [item["path"] for item in result["differences"]["changed"]])
 
     def test_added_and_missing_files_are_reported(self) -> None:
+        optional = self.actual / "Diagnostics" / "optional.txt"
+        optional.parent.mkdir(parents=True, exist_ok=True)
+        optional.write_text("optional\n", encoding="utf-8")
+        self._refresh_manifest_files(self.actual)
         golden.create_baseline(self.actual, self.baseline)
-        (self.actual / "Niagara" / "NS_Water.meta.json").unlink()
+        optional.unlink()
         added = self.actual / "Materials" / "M_Added.md"
         added.parent.mkdir(parents=True, exist_ok=True)
         added.write_text("added\n", encoding="utf-8")
@@ -208,7 +219,7 @@ class GoldenRegressionTests(unittest.TestCase):
         result = golden.compare_packs(self.actual, self.baseline)
 
         self.assertEqual(["Materials/M_Added.md"], result["differences"]["added"])
-        self.assertEqual(["Niagara/NS_Water.meta.json"], result["differences"]["missing"])
+        self.assertEqual(["Diagnostics/optional.txt"], result["differences"]["missing"])
         self.assertEqual(1, result["exitCode"])
 
     def test_text_bom_line_endings_and_trailing_whitespace_are_normalized(self) -> None:
@@ -257,12 +268,17 @@ class GoldenRegressionTests(unittest.TestCase):
                 "name": "M_Duplicate",
                 "objectPath": "/Game/Test/M_Duplicate.M_Duplicate",
                 "exportFile": "Materials/Duplicate.md",
+                "metadataFile": "Materials/M_Duplicate.meta.json",
                 "dependencies": [],
                 "referencers": [],
             }
         )
         (self.actual / "Materials").mkdir(parents=True, exist_ok=True)
         (self.actual / "Materials" / "Duplicate.md").write_text("duplicate\n", encoding="utf-8")
+        self._dump(
+            self.actual / "Materials" / "M_Duplicate.meta.json",
+            {"assetName": "M_Duplicate", "objectPath": "/Game/Test/M_Duplicate.M_Duplicate"},
+        )
         index["assetCount"] = len(index["assets"])
         self._dump(index_path, index)
         self._refresh_manifest_files(self.actual)
@@ -271,6 +287,103 @@ class GoldenRegressionTests(unittest.TestCase):
             golden.create_baseline(self.actual, self.baseline)
 
         self.assertIn("duplicate exportFile", str(raised.exception))
+
+    def test_legacy_schema_one_pack_without_metadata_file_mapping_is_accepted(self) -> None:
+        index_path = self.actual / "index.json"
+        manifest_path = self.actual / "context-pack.json"
+        index = json.loads(index_path.read_text(encoding="utf-8"))
+        index["assets"][0].pop("metadataFile")
+        self._dump(index_path, index)
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest.pop("attemptedAssetCount")
+        manifest["assets"][0].pop("metadataFile")
+        self._dump(manifest_path, manifest)
+        self._refresh_manifest_files(self.actual)
+
+        golden.create_baseline(self.actual, self.baseline)
+
+        self.assertTrue((self.baseline / "Niagara" / "NS_Water.meta.json").is_file())
+
+    def test_modern_pack_requires_metadata_mapping_and_valid_content_fingerprint(self) -> None:
+        index_path = self.actual / "index.json"
+        manifest_path = self.actual / "context-pack.json"
+        index = json.loads(index_path.read_text(encoding="utf-8"))
+        index["assets"][0].pop("metadataFile")
+        self._dump(index_path, index)
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest["assets"][0].pop("metadataFile")
+        self._dump(manifest_path, manifest)
+        self._refresh_manifest_files(self.actual)
+        with self.assertRaises(golden.GoldenError) as missing_mapping:
+            golden.create_baseline(self.actual, self.baseline)
+        self.assertIn("requires an explicit metadataFile", str(missing_mapping.exception))
+
+        self._write_pack(self.actual)
+        readable = self.actual / "Niagara" / "NS_Water_ReadableNiagara.md"
+        original = readable.read_bytes()
+        readable.write_bytes(bytes([original[0] ^ 1]) + original[1:])
+        with self.assertRaises(golden.GoldenError) as fingerprint_mismatch:
+            golden.create_baseline(self.actual, self.baseline)
+        self.assertIn("fingerprint does not match", str(fingerprint_mismatch.exception))
+
+    def test_same_name_assets_with_unique_files_are_accepted(self) -> None:
+        index_path = self.actual / "index.json"
+        manifest_path = self.actual / "context-pack.json"
+        index = json.loads(index_path.read_text(encoding="utf-8"))
+        second_object_path = "/Game/Other/NS_Water.NS_Water"
+        second_export = "Niagara/NS_Water__second_ReadableNiagara.md"
+        second_metadata = "Niagara/NS_Water__second.meta.json"
+        (self.actual / second_export).write_text("# Other NS_Water\n", encoding="utf-8")
+        self._dump(
+            self.actual / second_metadata,
+            {"assetName": "NS_Water", "objectPath": second_object_path},
+        )
+        second_record = {
+            "name": "NS_Water",
+            "objectPath": second_object_path,
+            "exportFile": second_export,
+            "metadataFile": second_metadata,
+            "dependencies": [],
+            "referencers": [],
+        }
+        index["assets"].append(second_record)
+        index["assetCount"] = len(index["assets"])
+        self._dump(index_path, index)
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest["assets"].append(
+            {
+                "objectPath": second_object_path,
+                "packageName": "/Game/Other/NS_Water",
+                "exportFile": second_export,
+                "metadataFile": second_metadata,
+            }
+        )
+        manifest["attemptedAssetCount"] = len(manifest["assets"])
+        manifest["exportedAssetCount"] = len(manifest["assets"])
+        self._dump(manifest_path, manifest)
+        self._refresh_manifest_files(self.actual)
+
+        golden.create_baseline(self.actual, self.baseline)
+
+        self.assertTrue((self.baseline / second_export).is_file())
+        self.assertTrue((self.baseline / second_metadata).is_file())
+
+    def test_missing_required_file_and_metadata_identity_mismatch_are_rejected(self) -> None:
+        (self.actual / "README.md").unlink()
+        self._refresh_manifest_files(self.actual)
+        with self.assertRaises(golden.GoldenError) as missing:
+            golden.create_baseline(self.actual, self.baseline)
+        self.assertIn("missing required files", str(missing.exception))
+
+        (self.actual / "README.md").write_text("# Context Pack\n", encoding="utf-8")
+        metadata_path = self.actual / "Niagara" / "NS_Water.meta.json"
+        metadata = json.loads(metadata_path.read_text(encoding="utf-8-sig"))
+        metadata["objectPath"] = "/Game/Wrong/NS_Water.NS_Water"
+        self._dump(metadata_path, metadata, bom=True)
+        self._refresh_manifest_files(self.actual)
+        with self.assertRaises(golden.GoldenError) as mismatch:
+            golden.create_baseline(self.actual, self.baseline)
+        self.assertIn("metadata objectPath does not match", str(mismatch.exception))
 
     def test_force_refuses_unmanaged_baseline_directory(self) -> None:
         self.baseline.mkdir(parents=True)

@@ -232,6 +232,7 @@ def _validate_context_pack(root: Path) -> Path:
     if not manifest_path.is_file():
         raise GoldenError(f"Context Pack manifest does not exist: {manifest_path}")
     manifest = _read_json_object(manifest_path, "Context Pack manifest")
+    modern = "attemptedAssetCount" in manifest
     if manifest.get("documentType") != CONTEXT_PACK_DOCUMENT_TYPE:
         raise GoldenError(f"Not a ReadAllandExplains Context Pack: {manifest_path}")
     if manifest.get("state") != "complete":
@@ -250,30 +251,52 @@ def _validate_context_pack(root: Path) -> Path:
     if not isinstance(manifest_files, list):
         raise GoldenError(f"Context Pack manifest files must be an array: {manifest_path}")
     declared_files: Dict[str, Mapping[str, Any]] = {}
+    declared_file_keys: Dict[str, str] = {}
     for file_entry in manifest_files:
         if not isinstance(file_entry, dict):
             raise GoldenError(f"Context Pack manifest contains an invalid file entry: {manifest_path}")
         relative_path, file_path = _resolve_pack_file(resolved, file_entry.get("path"), "manifest file path")
-        if relative_path in declared_files:
+        path_key = relative_path.casefold()
+        if path_key in declared_file_keys:
             raise GoldenError(f"Context Pack manifest contains duplicate file path: {relative_path}")
+        declared_file_keys[path_key] = relative_path
         size = file_entry.get("size")
         fingerprint = file_entry.get("fingerprint")
         if not isinstance(size, int) or isinstance(size, bool) or size < 0:
             raise GoldenError(f"Context Pack manifest file size is invalid: {relative_path}")
-        if not isinstance(fingerprint, str) or not fingerprint.startswith("blake3-160:"):
+        if not isinstance(fingerprint, str) or not fingerprint.startswith(("blake3-160:", "sha1:")):
             raise GoldenError(f"Context Pack manifest fingerprint is invalid: {relative_path}")
         if not file_path.is_file() or file_path.stat().st_size != size:
             raise GoldenError(f"Context Pack manifest file is missing or has the wrong size: {relative_path}")
+        if modern:
+            actual_fingerprint = "sha1:" + hashlib.sha1(file_path.read_bytes()).hexdigest()
+            if fingerprint.casefold() != actual_fingerprint:
+                raise GoldenError(f"Context Pack manifest file fingerprint does not match: {relative_path}")
         declared_files[relative_path] = file_entry
-    disk_files = {
-        relative_path
-        for relative_path, _ in _iter_files(resolved)
-        if relative_path != MANIFEST_FILE
-    }
-    if set(declared_files) != disk_files:
-        missing = sorted(set(declared_files) - disk_files)
-        undeclared = sorted(disk_files - set(declared_files))
+    if modern:
+        fingerprint_source = "".join(
+            f"{relative_path}:{declared_files[relative_path]['size']}:{str(declared_files[relative_path]['fingerprint']).split(':', 1)[1]}\n"
+            for relative_path in declared_files
+        )
+        expected_pack_fingerprint = "sha1:" + hashlib.sha1(fingerprint_source.encode("utf-8")).hexdigest()
+        if str(manifest.get("fingerprint", "")).casefold() != expected_pack_fingerprint:
+            raise GoldenError(f"Context Pack fingerprint does not match its file manifest: {manifest_path}")
+    disk_files: Dict[str, str] = {}
+    for relative_path, _ in _iter_files(resolved):
+        if relative_path == MANIFEST_FILE:
+            continue
+        path_key = relative_path.casefold()
+        if path_key in disk_files:
+            raise GoldenError(f"Context Pack contains case-insensitive duplicate file paths: {relative_path}")
+        disk_files[path_key] = relative_path
+    if set(declared_file_keys) != set(disk_files):
+        missing = sorted(declared_file_keys[key] for key in set(declared_file_keys) - set(disk_files))
+        undeclared = sorted(disk_files[key] for key in set(disk_files) - set(declared_file_keys))
         raise GoldenError(f"Context Pack file manifest mismatch; missing={missing}, undeclared={undeclared}")
+    required_files = {"readme.md", "index.md", "index.json"}
+    missing_required = sorted(required_files - set(disk_files))
+    if missing_required:
+        raise GoldenError(f"Context Pack is missing required files: {missing_required}")
 
     manifest_assets = manifest.get("assets")
     if not isinstance(manifest_assets, list):
@@ -281,6 +304,10 @@ def _validate_context_pack(root: Path) -> Path:
     exported_count = manifest.get("exportedAssetCount")
     if not isinstance(exported_count, int) or isinstance(exported_count, bool) or exported_count != len(manifest_assets):
         raise GoldenError(f"Context Pack exportedAssetCount does not match manifest assets: {manifest_path}")
+    if modern:
+        attempted_count = manifest.get("attemptedAssetCount")
+        if not isinstance(attempted_count, int) or isinstance(attempted_count, bool) or attempted_count <= 0 or attempted_count != exported_count:
+            raise GoldenError(f"Context Pack attemptedAssetCount does not match exported assets: {manifest_path}")
 
     index_path = resolved / "index.json"
     if not index_path.is_file():
@@ -293,23 +320,57 @@ def _validate_context_pack(root: Path) -> Path:
     if not isinstance(asset_count, int) or isinstance(asset_count, bool) or asset_count != len(index_assets):
         raise GoldenError(f"Context Pack index assetCount does not match assets: {index_path}")
 
-    def asset_map(items: Sequence[Any], label: str) -> Dict[str, str]:
-        result: Dict[str, str] = {}
+    legacy_metadata_by_object: Dict[str, Tuple[str, Path]] = {}
+    for relative_path, metadata_path in _iter_files(resolved):
+        if not relative_path.casefold().endswith(".meta.json"):
+            continue
+        metadata = _read_json_object(metadata_path, "Context Pack metadata")
+        metadata_object_path = metadata.get("objectPath")
+        if isinstance(metadata_object_path, str) and metadata_object_path.startswith("/Game/"):
+            if metadata_object_path in legacy_metadata_by_object:
+                raise GoldenError(f"Context Pack contains duplicate Metadata objectPath: {metadata_object_path}")
+            legacy_metadata_by_object[metadata_object_path] = (relative_path, metadata_path)
+
+    def asset_map(items: Sequence[Any], label: str) -> Dict[str, Tuple[str, str]]:
+        result: Dict[str, Tuple[str, str]] = {}
+        export_keys: set[str] = set()
+        metadata_keys: set[str] = set()
         for item in items:
             if not isinstance(item, dict):
                 raise GoldenError(f"{label} contains an invalid asset entry")
             object_path = item.get("objectPath")
             export_file = item.get("exportFile")
+            metadata_file = item.get("metadataFile")
             if not isinstance(object_path, str) or not object_path.startswith("/Game/"):
                 raise GoldenError(f"{label} contains an invalid objectPath")
             relative_path, file_path = _resolve_pack_file(resolved, export_file, f"{label} exportFile")
+            if modern and (not isinstance(metadata_file, str) or not metadata_file):
+                raise GoldenError(f"{label} requires an explicit metadataFile for objectPath: {object_path}")
+            if metadata_file is None:
+                legacy_metadata = legacy_metadata_by_object.get(object_path)
+                if not legacy_metadata:
+                    raise GoldenError(f"{label} has no Metadata for objectPath: {object_path}")
+                metadata_relative_path, metadata_path = legacy_metadata
+            else:
+                metadata_relative_path, metadata_path = _resolve_pack_file(resolved, metadata_file, f"{label} metadataFile")
             if not file_path.is_file():
                 raise GoldenError(f"{label} exportFile does not exist: {relative_path}")
+            if not metadata_path.is_file():
+                raise GoldenError(f"{label} metadataFile does not exist: {metadata_relative_path}")
+            metadata = _read_json_object(metadata_path, f"{label} metadata")
+            if metadata.get("objectPath") != object_path:
+                raise GoldenError(f"{label} metadata objectPath does not match: {metadata_relative_path}")
             if object_path in result:
                 raise GoldenError(f"{label} contains duplicate objectPath: {object_path}")
-            result[object_path] = relative_path
-        if len(result.values()) != len(set(result.values())):
-            raise GoldenError(f"{label} contains duplicate exportFile paths")
+            export_key = relative_path.casefold()
+            metadata_key = metadata_relative_path.casefold()
+            if export_key in export_keys:
+                raise GoldenError(f"{label} contains duplicate exportFile paths")
+            if metadata_key in metadata_keys:
+                raise GoldenError(f"{label} contains duplicate metadataFile paths")
+            export_keys.add(export_key)
+            metadata_keys.add(metadata_key)
+            result[object_path] = (relative_path, metadata_relative_path)
         return result
 
     manifest_asset_map = asset_map(manifest_assets, "Context Pack manifest")

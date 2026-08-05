@@ -1,6 +1,6 @@
 # ReadAllandExplains 开发仓库
 
-本仓库是 ReadAllandExplains 的唯一开发源码仓库。当前开发线为 `iteration/vnext`，插件版本为 `4.6.0-preview.3`。外层目录名 `ReadAllandExplains_4.1.0_dev` 是历史工作目录名，不代表当前产品版本；版本只以插件清单为准。
+本仓库是 ReadAllandExplains 的唯一开发源码仓库。当前开发线为 `iteration/vnext`，发布候选版本为 `4.7.0`。外层目录名 `ReadAllandExplains_4.1.0_dev` 是历史工作目录名，不代表当前产品版本；版本只以插件清单为准。
 
 ## 权威来源
 
@@ -9,7 +9,8 @@
 - CodeBuddy Skill 源：[SKILL.md](ReadAllandExplains/skills/readallandexplains/SKILL.md)
 - MCP 源：[readallandexplains_mcp.py](ReadAllandExplains/Integrations/MCP/readallandexplains_mcp.py)
 - 当前能力说明：[README.md](ReadAllandExplains/README.md)
-- 当前版本说明：[RELEASE_NOTES_4.6.0-preview.3.md](ReadAllandExplains/RELEASE_NOTES_4.6.0-preview.3.md)
+- 当前版本说明：[RELEASE_NOTES_4.7.0.md](ReadAllandExplains/RELEASE_NOTES_4.7.0.md)
+- 安装与升级：[INSTALLATION.md](ReadAllandExplains/docs/INSTALLATION.md)
 - 资产与发布管理规则：[REPOSITORY_MANAGEMENT.md](ReadAllandExplains/docs/REPOSITORY_MANAGEMENT.md)
 
 仓库外的 `.agent/skills/readallandexplains`、UE 项目 `Plugins/ReadAllandExplains`、备份目录和导出的 Context Pack 都是安装、部署、备份或数据副本，不是源码来源，不应反向覆盖仓库。

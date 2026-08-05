@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import importlib.util
 import json
 import os
@@ -135,6 +136,49 @@ class ContractTests(unittest.TestCase):
         material_readable = pack / "Materials" / "M_Test_ReadableMaterial.md"
         material_readable.parent.mkdir(parents=True, exist_ok=True)
         material_readable.write_text("# M_Test\n", encoding="utf-8")
+
+    def _make_modern_pack(self, pack: Path) -> None:
+        (pack / "README.md").write_text("# Context Pack\n", encoding="utf-8")
+        (pack / "index.md").write_text("# Index\n", encoding="utf-8")
+        index_path = pack / "index.json"
+        index = json.loads(index_path.read_text(encoding="utf-8"))
+        index["assetCount"] = len(index["assets"])
+        index["assets"][0]["metadataFile"] = "Niagara/NS_Test.meta.json"
+        index["assets"][1]["metadataFile"] = "Materials/M_Test.meta.json"
+        self._dump(index_path, index)
+        manifest_path = pack / "context-pack.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest.update(
+            {
+                "packId": pack.name,
+                "attemptedAssetCount": len(index["assets"]),
+                "failedCount": 0,
+                "skippedCount": 0,
+                "assets": [
+                    {
+                        "objectPath": item["objectPath"],
+                        "exportFile": item["exportFile"],
+                        "metadataFile": item["metadataFile"],
+                    }
+                    for item in index["assets"]
+                ],
+            }
+        )
+        manifest["files"] = [
+            {
+                "path": path.relative_to(pack).as_posix(),
+                "size": path.stat().st_size,
+                "fingerprint": "sha1:" + hashlib.sha1(path.read_bytes()).hexdigest(),
+            }
+            for path in sorted(pack.rglob("*"))
+            if path.is_file() and path != manifest_path
+        ]
+        fingerprint_source = "".join(
+            f"{item['path']}:{item['size']}:{item['fingerprint'].split(':', 1)[1]}\n"
+            for item in manifest["files"]
+        )
+        manifest["fingerprint"] = "sha1:" + hashlib.sha1(fingerprint_source.encode("utf-8")).hexdigest()
+        self._dump(manifest_path, manifest)
 
     def test_all_tools_publish_read_only_contract(self) -> None:
         self.assertEqual(7, len(rae.TOOLS))
@@ -356,6 +400,80 @@ class ContractTests(unittest.TestCase):
         names = [item["pack_id"] for item in result["data"]["packs"]]
         self.assertEqual(["ContextPack_Complete"], names)
         self.assertTrue(any(warning["code"] == "PACK_SKIPPED" for warning in result["warnings"]))
+
+    def test_explicit_and_default_resolution_reject_temporary_pack(self) -> None:
+        temporary = self.packs / "ContextPack_Temporary.tmp"
+        self._write_pack(temporary, state="complete", schema=1)
+        with self.assertRaises(rae.RaeError) as explicit:
+            self.store.resolve_pack("ContextPack_Temporary.tmp")
+        self.assertEqual("PACK_INCOMPLETE", explicit.exception.code)
+        timestamp = self.complete.stat().st_mtime + 10
+        os.utime(temporary, (timestamp, timestamp))
+        self.assertEqual(self.complete.resolve(), self.store.resolve_pack())
+
+    def test_complete_pack_with_failed_or_skipped_assets_is_rejected(self) -> None:
+        manifest_path = self.complete / "context-pack.json"
+        for field in ("failedCount", "skippedCount"):
+            with self.subTest(field=field):
+                manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+                manifest[field] = 1
+                self._dump(manifest_path, manifest)
+                with self.assertRaises(rae.RaeError) as raised:
+                    self.store.resolve_pack("ContextPack_Complete")
+                self.assertEqual("PACK_INCOMPLETE", raised.exception.code)
+                manifest[field] = 0
+                self._dump(manifest_path, manifest)
+
+    def test_modern_pack_strict_manifest_and_metadata_mapping_are_validated(self) -> None:
+        self._make_modern_pack(self.complete)
+        self.assertEqual(self.complete.resolve(), self.store.resolve_pack("ContextPack_Complete"))
+
+        metadata_path = self.complete / "Niagara" / "NS_Test.meta.json"
+        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+        metadata["objectPath"] = "/Game/Wrong/NS_Test.NS_Test"
+        self._dump(metadata_path, metadata)
+        manifest_path = self.complete / "context-pack.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        for entry in manifest["files"]:
+            if entry["path"] == "Niagara/NS_Test.meta.json":
+                entry["size"] = metadata_path.stat().st_size
+        self._dump(manifest_path, manifest)
+        with self.assertRaises(rae.RaeError) as raised:
+            self.store.resolve_pack("ContextPack_Complete")
+        self.assertEqual("PACK_INCOMPLETE", raised.exception.code)
+
+    def test_modern_pack_requires_metadata_mapping_and_valid_content_fingerprint(self) -> None:
+        self._make_modern_pack(self.complete)
+        index_path = self.complete / "index.json"
+        manifest_path = self.complete / "context-pack.json"
+        index = json.loads(index_path.read_text(encoding="utf-8"))
+        index["assets"][0].pop("metadataFile")
+        self._dump(index_path, index)
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest["assets"][0].pop("metadataFile")
+        for entry in manifest["files"]:
+            path = self.complete / entry["path"]
+            if entry["path"] == "index.json":
+                entry["size"] = path.stat().st_size
+                entry["fingerprint"] = "sha1:" + hashlib.sha1(path.read_bytes()).hexdigest()
+        fingerprint_source = "".join(
+            f"{item['path']}:{item['size']}:{item['fingerprint'].split(':', 1)[1]}\n"
+            for item in manifest["files"]
+        )
+        manifest["fingerprint"] = "sha1:" + hashlib.sha1(fingerprint_source.encode("utf-8")).hexdigest()
+        self._dump(manifest_path, manifest)
+        with self.assertRaises(rae.RaeError) as missing_mapping:
+            self.store.resolve_pack("ContextPack_Complete")
+        self.assertEqual("PACK_INCOMPLETE", missing_mapping.exception.code)
+
+        self._write_pack(self.complete, state="complete", schema=1)
+        self._make_modern_pack(self.complete)
+        readable = self.complete / "Materials" / "M_Test_ReadableMaterial.md"
+        original = readable.read_bytes()
+        readable.write_bytes(bytes([original[0] ^ 1]) + original[1:])
+        with self.assertRaises(rae.RaeError) as fingerprint_mismatch:
+            self.store.resolve_pack("ContextPack_Complete")
+        self.assertEqual("PACK_INCOMPLETE", fingerprint_mismatch.exception.code)
 
     def test_manifest_fingerprint_is_preferred(self) -> None:
         manifest_path = self.complete / "context-pack.json"
