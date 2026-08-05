@@ -17,9 +17,6 @@ concurrency:
 jobs:
   python-regression:
     runs-on: windows-latest
-    defaults:
-      run:
-        working-directory: ReadAllandExplains
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -29,8 +26,20 @@ jobs:
         with:
           python-version: "3.11"
 
+      - name: Resolve plugin root
+        id: layout
+        shell: pwsh
+        run: |
+          if (Test-Path "ReadAllandExplains/Tests") {
+            "plugin_root=ReadAllandExplains" >> $env:GITHUB_OUTPUT
+          } else {
+            "plugin_root=." >> $env:GITHUB_OUTPUT
+          }
+
       - name: Run Golden Pack regression tests
+        working-directory: ${{ steps.layout.outputs.plugin_root }}
         run: python -m unittest discover -s Tests/Golden -p "test_*.py" -v
 
       - name: Run MCP contract tests
+        working-directory: ${{ steps.layout.outputs.plugin_root }}
         run: python -m unittest discover -s Tests/MCP -p "test_*.py" -v
