@@ -1,9 +1,9 @@
 {
 	"FileVersion": 3,
-	"Version": 12,
-	"VersionName": "4.6.0-preview.3",
+	"Version": 13,
+	"VersionName": "4.6.0",
 	"FriendlyName": "ReadAllandExplains",
-	"Description": "UE asset AI Context Compiler with permission-gated SyncLive Lite, progressive analysis, and evidence-backed Context Packs.",
+	"Description": "UE asset AI Context Compiler — exports Blueprint, Material, and Niagara assets as human-readable Markdown and structured JSON with progressive MCP retrieval and permission-gated SyncLive Lite.",
 	"Category": "Editor",
 	"CreatedBy": "Aoife",
 	"CreatedByURL": "",

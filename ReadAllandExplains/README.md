@@ -1,62 +1,204 @@
 # ReadAllandExplains
 
-ReadAllandExplains 是面向 Unreal Engine 技术美术资产的 AI Context Compiler。插件把 Blueprint、Material、Niagara 等资产导出为便于人类速读的 Markdown，以及便于 AI 和工具消费的结构化 JSON 元数据。
+[![Version](https://img.shields.io/badge/version-4.6.0-blue)](https://github.com/2026511939ljc-star/ReadAndExplain/releases)
+[![UE5](https://img.shields.io/badge/Unreal%20Engine-5.7-black)](https://www.unrealengine.com/)
+[![Platform](https://img.shields.io/badge/platform-Win64-lightgrey)]()
+[![License](https://img.shields.io/badge/license-UE%20EULA-orange)](https://www.unrealengine.com/en-US/eula)
 
-## 4.6.0-preview.3（开发中）
+**An AI Context Compiler for Unreal Engine technical-art assets.**
 
-1. 保留 preview.2 的大任务拆分、材质/Niagara 优先、coverage、严格 UTF-8 和证据式渐进读取。
-2. 新增 SyncLive Lite：用户批准具体补充计划后，MCP 可向正在运行的 UE 编辑器提交 1 至 5 个 `/Game/` 资产的定向静态补快照请求。
-3. 请求强制绑定完整基线 Pack 指纹，依赖深度仅允许 0 或 1；UE 消费端会独立复验许可、范围、资产类型和指纹。
-4. 请求采用 `pending → processing → complete/failed/rejected` 状态机，文件原子落盘，编辑器中断后可审计恢复。
-5. 新 Pack 记录 `originRequestId` 与 `basePackId`；Skill 核验后从被阻塞的小任务继续，不要求用户重复问题。
-6. SyncLive Lite 不执行任意命令，不修改资产、不保存关卡、不控制或观测运行时。
+[中文](#中文) | [English](#english)
 
-## 4.5.0-preview.1
+---
 
-1. 新增 AI Context Pack：以所选资产为根，递归收集 `/Game/` 下受支持的项目依赖并输出独立上下文目录。
-2. Niagara 曲线按 Key、插值、切线、外推与配置生成稳定指纹，同形副本合并且通过 `usedBy` 保留全部来源。
-3. 曲线完整 Key 保留在 `.meta.json` 中，不额外生成浏览器文件；配套 Skill/MCP 可按需读取并解释曲线。
-4. Context Pack 内含 `README.md`、`context-pack.json`、批量索引和分类资产文档。
-5. Renderer 明细、项目自定义模块递归图与 Schema 2 `graphs` 继续保持兼容。
-6. 新增只读本地 MCP 与配套 Skill，使用“索引 → 摘要 → 目标片段”的渐进式读取流程，避免 AI 一次加载大型导出文件。
+## 中文
 
-## 使用方式
+ReadAllandExplains 将 Blueprint、Material、Niagara 等资产导出为便于人类速读的 Markdown，以及便于 AI 和工具消费的结构化 JSON 元数据。配套只读 MCP 和 Skill 实现渐进式查询，避免 AI 一次加载大型导出文件。
 
-1. 将 `ReadAllandExplains` 文件夹放入项目的 `Plugins` 目录。
-2. 使用 Unreal Engine 5.7 打开项目并启用插件。
-3. 普通导出：在内容浏览器选择“导出所有选中为 AI 可读文档”。
-4. 完整上下文：选择“生成 AI Context Pack（含项目依赖）”。
-5. 导出结果位于项目 `Saved/ReadAllandExplainsExports` 目录。
+### 核心特性
 
-无界面命令：`ReadAllandExplains.ExportAssets` 和 `ReadAllandExplains.ExportContextPack`。旧命令 `GetTheMeaning.ExportAssets` 继续兼容。
+- **统一 Schema 2 图 IR**：材质节点/Pin/Link 与蓝图执行流进入统一图中间表示，Markdown 与 JSON 共用同一 IR 生成。
+- **Niagara 深度导出**：Renderer 明细、曲线原始 Key/插值/切线/外推、项目自定义模块递归图（深度 4、循环去重），曲线指纹去重并保留 `usedBy` 来源。
+- **AI Context Pack**：以根资产递归收集 `/Game/` 下受支持依赖，默认深度 2（可配 0–4），生成独立上下文目录含 README、索引和分类资产文档。
+- **渐进式 MCP 查询**：只读 stdio MCP 提供 Context Pack 列表、资产搜索、摘要、Graph/Renderer/曲线详情与文本检索，支持 `coverage` 依赖缺口视图。
+- **SyncLive Lite**：用户批准补充计划后，MCP 可向正在运行的 UE 编辑器提交 1–5 个 `/Game/` 资产的定向静态补快照请求，原子落盘、状态机管理、PIE 暂停。
+- **CodeBuddy 原生接入**：插件包含 1 个 Command、1 个 Skill、1 个只读 MCP，自动发现当前或嵌套 UE 项目导出目录。
+- **可信查询层**：统一 `rae.mcp/1.0` Envelope、Evidence 证据链、稳定错误码、分页、`structuredContent`、`outputSchema` 与只读 Tool Annotations。
+- **原子快照**：Context Pack 采用 `.tmp` 写入 → `complete` 重命名发布，Manifest 含包内相对路径、文件大小和 BLAKE3-160 指纹。
 
-## Skill、MCP 与 CodeBuddy
+### 支持的资产类型
 
-- Skill 位于 `skills/readallandexplains/SKILL.md`，负责 UE 资产解释、曲线分析、HLSL 阅读和按需查询流程；这是唯一可编辑源，工作区 `.agent/skills` 只是安装副本。
-- 使用 `Scripts/SyncWorkspaceSkill.ps1` 将仓库 Skill 单向同步到指定工作区；同步后重新加载 CodeBuddy 或开启新对话。
-- MCP 位于 `Integrations/MCP/readallandexplains_mcp.py`；读取 Context Pack，并在明确许可后写入受限 SyncLive 请求，但从不修改 `.uasset`。
-- CodeBuddy 原生入口为 `.codebuddy-plugin/plugin.json` 和 `.mcp.json`；本地验证运行 `codebuddy plugin validate .`，测试运行 `codebuddy --plugin-dir .`。
-- 源码、构建产物、部署副本、导出数据和发布流程的完整边界见 `docs/REPOSITORY_MANAGEMENT.md`。
-- CodeBuddy 会通过 `CODEBUDDY_PROJECT_DIR` 自动寻找当前或嵌套 UE 项目的 `Saved/ReadAllandExplainsExports`；仍可用 `READALL_EXPORT_ROOT` 或 `--root` 显式覆盖。
-- 诊断命令：`/readallandexplains:readallandexplains-doctor`。
-- Windows 可通过 `Integrations/MCP/readallandexplains_mcp.bat` 单独启动；通用客户端配置参考 `Integrations/MCP/mcp-config.example.json`。
-- MCP 工具：5 个读取工具，以及授权后使用的 `request_targeted_snapshot`、`get_snapshot_request_status`。
-- 运行契约测试：`python -m unittest discover -s Tests/MCP -p "test_*.py" -v`。
+| 类型 | 输出文件 | 说明 |
+|------|----------|------|
+| Blueprint | `_ReadableCode.txt` + `.meta.json` | 蓝图执行流展开 |
+| Material / Material Instance | `_ReadableMaterial.md` + `.meta.json` | 节点图 IR + 参数 |
+| Material Function | `_ReadableMaterial.md` + `.meta.json` | 复用材质导出器 |
+| Niagara System / Emitter / Script | `_ReadableNiagara.md` + `.meta.json` | Renderer + 曲线 + 模块递归图 |
 
-## 输出
+**暂不支持**：Texture2D/TextureCube（二进制像素数据）、AnimBP 状态机、缩略图缓存、反向导入器。
 
-- Blueprint：`_ReadableCode.txt` 与 `.meta.json`
-- Material / Material Function：`_ReadableMaterial.md` 与 `.meta.json`
-- Niagara System / Emitter / Script：`_ReadableNiagara.md` 与 `.meta.json`
+### 安装
 
-默认推荐使用 Compact 模式。旧的详细 Niagara 文本仍会保留，新增统一 IR 主要写入元数据 JSON，并在 Markdown 中显示图统计。
+1. 下载 [最新 Release](https://github.com/2026511939ljc-star/ReadAndExplain/releases) 的 ZIP 包。
+2. 解压到 UE 项目的 `Plugins/ReadAllandExplains` 目录。
+3. 用 Unreal Engine 5.7 打开项目，启用插件。
+4. 重启编辑器。
 
-## 当前边界
+### 使用
 
-- Context Pack 只递归 `/Game/` 下插件可导出的项目资产；引擎内容和不支持的资产类型保留在依赖清单中但不单独导出。
-- SyncLive Lite 需要 UE 编辑器正在运行且插件已加载；PIE 期间暂停处理。它只生成静态补充 Pack，不是实时运行时桥接。
-- 完整参数级 DAG、运行时观测、反向导入和正式 Marketplace 发布包尚未完成。
+**普通导出**：在内容浏览器右键资产 → 选择「导出所有选中为 AI 可读文档」。
 
-## 构建验证
+**完整上下文**：右键资产 → 选择「生成 AI Context Pack（含项目依赖）」。
 
-`4.6.0-preview.3` 的 C++ 产品代码已通过 Unreal Engine 5.7 / Win64 Development 的 UHT、完整编译和 DLL 链接；当前仓库的 MCP、SyncLive Lite、Skill、版本及管理契约测试为 `28/28` 通过。`4.5.0-preview.1` 已完成 Trans 无界面加载和真实 Niagara Context Pack 导出验证；新包仅包含 Markdown/JSON，SVG/HTML 文件数为 0。
+**无界面命令**：
+- `ReadAllandExplains.ExportAssets`（兼容旧 `GetTheMeaning.ExportAssets`）
+- `ReadAllandExplains.ExportContextPack`
+
+导出结果位于项目 `Saved/ReadAllandExplainsExports` 目录。
+
+### Skill / MCP / CodeBuddy 集成
+
+- **Skill**：位于 `skills/readallandexplains/SKILL.md`，负责 UE 资产解释、曲线分析、HLSL 阅读和按需查询流程。使用 `Scripts/SyncWorkspaceSkill.ps1` 同步到工作区。
+- **MCP**：位于 `Integrations/MCP/readallandexplains_mcp.py`，只读 stdio MCP，提供 5 个查询工具和授权后的 SyncLive Lite 工具。Windows 通过 `readallandexplains_mcp.bat` 启动。
+- **CodeBuddy**：原生入口为 `.codebuddy-plugin/plugin.json` 和 `.mcp.json`。验证：`codebuddy plugin validate .`；测试：`codebuddy --plugin-dir .`。诊断命令：`/readallandexplains:readallandexplains-doctor`。
+- **自动发现**：CodeBuddy 通过 `CODEBUDDY_PROJECT_DIR` 自动寻找 UE 项目导出目录；可用 `READALL_EXPORT_ROOT` 或 `--root` 显式覆盖。
+
+### 架构概览
+
+```
+UE Editor
+  ├── AssetInsightExporter (主调度)
+  │   ├── BlueprintToTextExporter
+  │   ├── MaterialToTextExporter
+  │   ├── NiagaraToTextExporter
+  │   └── CommonAssetToTextExporter
+  ├── AssetDocumentIR (Schema 2 统一图 IR)
+  └── Context Pack (原子快照)
+       ├── README.md / context-pack.json / index.json
+       └── 分类资产文档 (.md + .meta.json)
+
+MCP Server (readallandexplains_mcp.py)
+  ├── list_packs / search_assets
+  ├── get_asset_detail (含 coverage 视图)
+  ├── get_graph / get_renderer_detail / get_curve_detail
+  ├── search_text
+  └── request_targeted_snapshot / get_snapshot_request_status (SyncLive Lite)
+
+Skill (SKILL.md)
+  └── 索引 → 摘要 → 目标片段 → 补拍授权 → 续答
+```
+
+### 构建与测试
+
+```powershell
+# 契约测试
+python -m unittest discover -s Tests/MCP -p "test_*.py" -v
+
+# CodeBuddy 插件验证
+codebuddy plugin validate .
+```
+
+### 当前边界
+
+- Context Pack 只递归 `/Game/` 下插件可导出的项目资产；引擎内容保留在依赖清单但不导出。
+- SyncLive Lite 需 UE 编辑器运行且插件已加载；PIE 期间暂停。只生成静态补充 Pack，不是实时运行时桥接。
+- 完整参数级 DAG、运行时观测、反向导入和 Marketplace 发布尚未完成。
+
+---
+
+## English
+
+ReadAllandExplains exports Blueprint, Material, and Niagara assets as human-readable Markdown and structured JSON metadata for AI and tool consumption. A companion read-only MCP and Skill enable progressive retrieval, preventing AI from loading large export files at once.
+
+### Key Features
+
+- **Unified Schema 2 Graph IR**: Material nodes/Pins/Links and Blueprint execution flow enter a unified graph intermediate representation; Markdown and JSON share the same IR.
+- **Deep Niagara Export**: Renderer details, curve raw Key/interpolation/tangent/extrapolation, project custom module recursive graphs (depth 4, cycle-deduplicated), curve fingerprint deduplication with `usedBy` provenance.
+- **AI Context Pack**: Recursively collects supported `/Game/` dependencies from a root asset (default depth 2, configurable 0–4), generating a standalone context directory with README, index, and categorized asset documents.
+- **Progressive MCP Query**: Read-only stdio MCP provides Context Pack listing, asset search, summaries, Graph/Renderer/curve details, and text search, with a `coverage` dependency gap view.
+- **SyncLive Lite**: After user approval, MCP can submit targeted static snapshot requests (1–5 `/Game/` assets) to a running UE editor, with atomic file writes, state machine management, and PIE pause.
+- **CodeBuddy Native Integration**: Plugin includes 1 Command, 1 Skill, and 1 read-only MCP, with automatic discovery of current or nested UE project export directories.
+- **Trustworthy Query Layer**: Unified `rae.mcp/1.0` Envelope, Evidence chain, stable error codes, pagination, `structuredContent`, `outputSchema`, and read-only Tool Annotations.
+- **Atomic Snapshots**: Context Packs use `.tmp` write → `complete` rename publishing; Manifest includes pack-relative paths, file sizes, and BLAKE3-160 fingerprints.
+
+### Supported Asset Types
+
+| Type | Output Files | Description |
+|------|-------------|-------------|
+| Blueprint | `_ReadableCode.txt` + `.meta.json` | Execution flow expansion |
+| Material / Material Instance | `_ReadableMaterial.md` + `.meta.json` | Node graph IR + parameters |
+| Material Function | `_ReadableMaterial.md` + `.meta.json` | Reuses material exporter |
+| Niagara System / Emitter / Script | `_ReadableNiagara.md` + `.meta.json` | Renderer + curves + module recursive graph |
+
+**Not yet supported**: Texture2D/TextureCube (binary pixel data), AnimBP state machines, thumbnail caching, reverse importer.
+
+### Installation
+
+1. Download the latest [Release ZIP](https://github.com/2026511939ljc-star/ReadAndExplain/releases).
+2. Extract to your UE project's `Plugins/ReadAllandExplains` directory.
+3. Open the project with Unreal Engine 5.7 and enable the plugin.
+4. Restart the editor.
+
+### Usage
+
+**Standard Export**: Right-click assets in Content Browser → select "Export Selected as AI-Readable Documents".
+
+**Full Context**: Right-click an asset → select "Generate AI Context Pack (with project dependencies)".
+
+**Console Commands**:
+- `ReadAllandExplains.ExportAssets` (compatible with legacy `GetTheMeaning.ExportAssets`)
+- `ReadAllandExplains.ExportContextPack`
+
+Export results are in the project's `Saved/ReadAllandExplainsExports` directory.
+
+### Skill / MCP / CodeBuddy Integration
+
+- **Skill**: Located at `skills/readallandexplains/SKILL.md`. Handles UE asset interpretation, curve analysis, HLSL reading, and on-demand query flow. Use `Scripts/SyncWorkspaceSkill.ps1` to sync to workspaces.
+- **MCP**: Located at `Integrations/MCP/readallandexplains_mcp.py`. Read-only stdio MCP with 5 query tools and permission-gated SyncLive Lite tools. Windows launcher: `readallandexplains_mcp.bat`.
+- **CodeBuddy**: Native entry points are `.codebuddy-plugin/plugin.json` and `.mcp.json`. Validate: `codebuddy plugin validate .`; Test: `codebuddy --plugin-dir .`. Diagnostics: `/readallandexplains:readallandexplains-doctor`.
+- **Auto-Discovery**: CodeBuddy uses `CODEBUDDY_PROJECT_DIR` to find UE project export directories; override with `READALL_EXPORT_ROOT` or `--root`.
+
+### Architecture Overview
+
+```
+UE Editor
+  ├── AssetInsightExporter (main dispatcher)
+  │   ├── BlueprintToTextExporter
+  │   ├── MaterialToTextExporter
+  │   ├── NiagaraToTextExporter
+  │   └── CommonAssetToTextExporter
+  ├── AssetDocumentIR (Schema 2 unified graph IR)
+  └── Context Pack (atomic snapshot)
+       ├── README.md / context-pack.json / index.json
+       └── Categorized asset docs (.md + .meta.json)
+
+MCP Server (readallandexplains_mcp.py)
+  ├── list_packs / search_assets
+  ├── get_asset_detail (with coverage view)
+  ├── get_graph / get_renderer_detail / get_curve_detail
+  ├── search_text
+  └── request_targeted_snapshot / get_snapshot_request_status (SyncLive Lite)
+
+Skill (SKILL.md)
+  └── Index → Summary → Target Fragment → Supplement Authorization → Continue
+```
+
+### Build & Test
+
+```powershell
+# Contract tests
+python -m unittest discover -s Tests/MCP -p "test_*.py" -v
+
+# CodeBuddy plugin validation
+codebuddy plugin validate .
+```
+
+### Current Limitations
+
+- Context Pack only recursively exports supported `/Game/` project assets; engine content is listed in dependencies but not exported.
+- SyncLive Lite requires a running UE editor with the plugin loaded; paused during PIE. It only generates static supplemental Packs, not a real-time runtime bridge.
+- Full parameter-level DAG, runtime observation, reverse import, and Marketplace release are not yet complete.
+
+### License
+
+This plugin is subject to the [Unreal Engine End User License Agreement](https://www.unrealengine.com/en-US/eula). Source code is provided for use within Unreal Engine projects.
