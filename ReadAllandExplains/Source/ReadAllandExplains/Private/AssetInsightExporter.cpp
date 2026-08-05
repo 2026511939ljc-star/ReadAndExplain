@@ -1210,7 +1210,7 @@ void FAssetInsightExporter::CollectParameterClues(UObject* Asset, TArray<FReadAl
 			{
 				const FProperty* Property = *It;
 				if (!Property || Property->HasAnyPropertyFlags(CPF_Transient | CPF_Deprecated)) continue;
-				FString PropValue = ExportReflectedValue(Property, CDO);
+				FString PropValue = AssetInsightImpl::ExportReflectedValue(Property, CDO);
 				if (PropValue.IsEmpty()) PropValue = Property->GetCPPType();
 				OutClues.Add({Property->GetName(), TEXT("蓝图变量"), PropValue});
 			}
@@ -1289,7 +1289,7 @@ void FAssetInsightExporter::CollectParameterClues(UObject* Asset, TArray<FReadAl
 	{
 		for (int32 Idx = 0; Idx < Enum->NumEnums(); ++Idx)
 		{
-			OutClues.Add({Enum->GetDisplayNameTextByIndex(Idx).ToString(), TEXT("枚举条目"), FString::Printf(TEXT("%d"), Enum->GetValueByIndex(Idx))});
+			OutClues.Add({Enum->GetDisplayNameTextByIndex(Idx).ToString(), TEXT("枚举条目"), LexToString(Enum->GetValueByIndex(Idx))});
 		}
 	}
 	else if (const UDataAsset* DataAsset = Cast<UDataAsset>(Asset))
@@ -1298,7 +1298,7 @@ void FAssetInsightExporter::CollectParameterClues(UObject* Asset, TArray<FReadAl
 		{
 			const FProperty* Property = *It;
 			if (!Property || Property->HasAnyPropertyFlags(CPF_Transient | CPF_Deprecated)) continue;
-			FString PropValue = ExportReflectedValue(Property, DataAsset);
+			FString PropValue = AssetInsightImpl::ExportReflectedValue(Property, DataAsset);
 			if (PropValue.IsEmpty()) PropValue = TEXT("<无默认值>");
 			OutClues.Add({Property->GetName(), TEXT("DataAsset 属性"), PropValue});
 		}

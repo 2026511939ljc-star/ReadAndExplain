@@ -1,0 +1,31 @@
+{
+  "schemaVersion": 1,
+  "cases": [
+    {
+      "name": "material-custom-hlsl",
+      "rootAssets": [
+        "/Game/YourProject/Materials/M_Custom.M_Custom"
+      ],
+      "baseline": ".baselines/material-custom-hlsl",
+      "requiredAssetPaths": [
+        "/Game/YourProject/Materials/M_Custom.M_Custom"
+      ],
+      "requiredMarkers": [
+        {
+          "file": "Materials/M_Custom_ReadableMaterial.md",
+          "contains": "CustomHLSL("
+        },
+        {
+          "file": "Materials/M_Custom.meta.json",
+          "contains": "MaterialExpressionCustom"
+        }
+      ],
+      "forbiddenMarkers": [
+        {
+          "file": "Materials/M_Custom_ReadableMaterial.md",
+          "contains": "UnknownExpr(\"MaterialExpressionCustom\""
+        }
+      ]
+    }
+  ]
+}

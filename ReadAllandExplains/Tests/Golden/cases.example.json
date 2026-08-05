@@ -1,0 +1,30 @@
+{
+  "schemaVersion": 1,
+  "cases": [
+    {
+      "name": "material-niagara-smoke",
+      "actualPack": "C:/Path/To/ReadAllandExplainsExports/ContextPacks/ContextPack_YYYYMMDD_HHMMSS",
+      "baseline": ".baselines/material-niagara-smoke",
+      "requiredAssetPaths": [
+        "/Game/YourProject/FX/NS_Example.NS_Example",
+        "/Game/YourProject/Materials/M_Example.M_Example"
+      ],
+      "requiredMarkers": [
+        {
+          "file": "Niagara/NS_Example.meta.json",
+          "contains": "niagaraRenderers"
+        },
+        {
+          "file": "Materials/M_Example.meta.json",
+          "contains": "parameters"
+        }
+      ],
+      "forbiddenMarkers": [
+        {
+          "file": "Materials/M_Example_ReadableMaterial.md",
+          "contains": "UnknownExpr(\"MaterialExpressionCustom\""
+        }
+      ]
+    }
+  ]
+}

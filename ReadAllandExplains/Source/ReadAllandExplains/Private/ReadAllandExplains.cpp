@@ -490,6 +490,7 @@ static FBatchExportResult ExportContextPack(
 	{
 		UE_LOG(LogTemp, Error, TEXT("ReadAllandExplains could not publish Context Pack atomically: %s -> %s"), *TemporaryPackDir, *FinalPackDir);
 		++Result.FailedCount;
+		SaveText(BuildContextPackManifest(PackId, TemporaryPackDir, TEXT("failed"), Roots, Result, DependencyDepth, OriginRequestId, BasePackId), TemporaryPackDir, TEXT("context-pack"), TEXT(".json"));
 		return Result;
 	}
 	OutPackDir = FinalPackDir;

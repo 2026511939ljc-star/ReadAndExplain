@@ -594,6 +594,7 @@ namespace
 		else if (const UMaterialExpressionCustom* Custom = Cast<UMaterialExpressionCustom>(Expr))
 		{
 			FString EscapedCode = Custom->Code;
+			EscapedCode.ReplaceInline(TEXT("\\"), TEXT("\\\\"));
 			EscapedCode.ReplaceInline(TEXT("\r\n"), TEXT("\\n"));
 			EscapedCode.ReplaceInline(TEXT("\n"), TEXT("\\n"));
 			EscapedCode.ReplaceInline(TEXT("\r"), TEXT("\\n"));
@@ -603,15 +604,23 @@ namespace
 			for (int32 i = 0; i < Custom->Inputs.Num(); ++i)
 			{
 				const FCustomInput& CInput = Custom->Inputs[i];
-				FString InputName = CInput.InputName;
+				FString InputName = CInput.InputName.ToString();
 				if (InputName.IsEmpty()) InputName = FString::Printf(TEXT("input%d"), i);
 				InputArgs.Add(FString::Printf(TEXT("Input(\"%s\", %s)"),
 					*EscapeForQuotedString(InputName),
 					*EmitValueForInput(Ctx, &CInput.Input)));
 			}
 			const FString JoinedInputs = FString::Join(InputArgs, TEXT(", "));
-			FString OutType = Custom->OutputType;
-			if (OutType.IsEmpty()) OutType = TEXT("Float3");
+			FString OutType;
+			switch (Custom->OutputType.GetValue())
+			{
+			case CMOT_Float1: OutType = TEXT("Float1"); break;
+			case CMOT_Float2: OutType = TEXT("Float2"); break;
+			case CMOT_Float3: OutType = TEXT("Float3"); break;
+			case CMOT_Float4: OutType = TEXT("Float4"); break;
+			case CMOT_MaterialAttributes: OutType = TEXT("MaterialAttributes"); break;
+			default: OutType = TEXT("Unknown"); break;
+			}
 			RHS = FString::Printf(TEXT("CustomHLSL(\"%s\", \"%s\"%s%s)"),
 				*EscapeForQuotedString(OutType),
 				*EscapedCode,

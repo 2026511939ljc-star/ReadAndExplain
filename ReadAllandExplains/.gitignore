@@ -11,3 +11,6 @@ Saved/
 __pycache__/
 *.py[cod]
 .plugins-cache.json
+Tests/Golden/*.local.json
+Tests/Golden/.baselines/
+Tests/Golden/.reports/

@@ -199,10 +199,10 @@ namespace CommonAssetTextImpl
 		for (int32 Idx = 0; Idx < Enum->NumEnums(); ++Idx)
 		{
 			Out += FString::Printf(
-				TEXT("| %d | %s | %d |\n"),
+				TEXT("| %d | %s | %lld |\n"),
 				Idx,
 				*FAssetTextSnapshot::MarkdownCell(Enum->GetDisplayNameTextByIndex(Idx).ToString()),
-				Enum->GetValueByIndex(Idx));
+				static_cast<long long>(Enum->GetValueByIndex(Idx)));
 		}
 		if (Enum->NumEnums() == 0)
 		{
@@ -218,7 +218,7 @@ namespace CommonAssetTextImpl
 		Out += TEXT("- Name: `") + DataAsset->GetName() + TEXT("`\n");
 		Out += TEXT("- ObjectPath: `") + DataAsset->GetPathName() + TEXT("`\n");
 		Out += TEXT("- Class: `") + DataAsset->GetClass()->GetPathName() + TEXT("`\n\n");
-		Out += FAssetTextSnapshot::ExportObjectProperties(DataAsset, TEXT("## Properties"));
+		Out += FAssetTextSnapshot::ExportObjectProperties(DataAsset, TEXT("Properties"));
 		return Out;
 	}
 }

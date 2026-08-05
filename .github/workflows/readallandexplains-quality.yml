@@ -1,0 +1,36 @@
+name: ReadAllandExplains Quality Gate
+
+on:
+  push:
+    branches:
+      - main
+      - iteration/vnext
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: readallandexplains-quality-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  python-regression:
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: ReadAllandExplains
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Run Golden Pack regression tests
+        run: python -m unittest discover -s Tests/Golden -p "test_*.py" -v
+
+      - name: Run MCP contract tests
+        run: python -m unittest discover -s Tests/MCP -p "test_*.py" -v
