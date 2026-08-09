@@ -404,6 +404,50 @@ class ContractTests(unittest.TestCase):
         self.assertEqual([], not_found["data"]["candidates"])
         self.assertIsNone(not_found["error"])
 
+    def test_locate_graph_target_enumerates_without_query(self) -> None:
+        listed = rae.call_tool(
+            self.store,
+            "locate_graph_target",
+            {"asset": "NS_Test", "graph_id": "graph-1", "target_kind": "node"},
+        )
+        self.assertEqual("listed", listed["data"]["resolution"])
+        self.assertTrue(listed["data"]["list_mode"])
+        self.assertEqual("", listed["data"]["query"])
+        self.assertTrue(listed["data"]["candidates"])
+        self.assertIsNone(listed["error"])
+        for candidate in listed["data"]["candidates"]:
+            self.assertEqual("listed", candidate["match_type"])
+            self.assertEqual("node", candidate["target_kind"])
+        pointers = [candidate["json_pointer"] for candidate in listed["data"]["candidates"]]
+        self.assertEqual(sorted(pointers), pointers)
+
+        filtered = rae.call_tool(
+            self.store,
+            "locate_graph_target",
+            {"asset": "NS_Test", "graph_id": "graph-1", "target_kind": "node", "kind_filter": "__no_such_class__"},
+        )
+        self.assertEqual("listed", filtered["data"]["resolution"])
+        self.assertEqual([], filtered["data"]["candidates"])
+        self.assertEqual("__no_such_class__", filtered["data"]["kind_filter"])
+
+    def test_locate_graph_target_not_found_returns_discovery_samples(self) -> None:
+        missed = rae.call_tool(
+            self.store,
+            "locate_graph_target",
+            {"asset": "NS_Test", "graph_id": "graph-1", "query": "__absent_target__", "target_kind": "node"},
+        )
+        self.assertEqual("not_found", missed["data"]["resolution"])
+        self.assertFalse(missed["data"]["list_mode"])
+        samples = missed["data"]["available_samples"]
+        self.assertTrue(samples)
+        self.assertLessEqual(len(samples), 10)
+        self.assertIn("discovery_hint", missed["data"])
+        for sample in samples:
+            self.assertTrue(sample["node_id"])
+            self.assertTrue(sample["json_pointer"].startswith("/graphs/"))
+        codes = {warning["code"] for warning in missed["warnings"]}
+        self.assertIn("TARGET_NOT_FOUND_SAMPLES_PROVIDED", codes)
+
     def test_graph_subgraph_resolves_node_and_pin_in_each_direction(self) -> None:
         common = {
             "asset": "NS_Test",
@@ -766,6 +810,23 @@ class ContractTests(unittest.TestCase):
         self.assertEqual("PERMISSION_REQUIRED", raised.exception.code)
         self.assertFalse((self.root / "SyncLive" / "Pending" / "permission-test.json").exists())
 
+    def test_targeted_snapshot_requires_explicit_pack_path(self) -> None:
+        pack_info = self.store.pack_info(self.complete)[0]
+        with self.assertRaises(rae.RaeError) as raised:
+            rae.call_tool(
+                self.store,
+                "request_targeted_snapshot",
+                {
+                    "asset_paths": ["/Game/Test/M_Missing.M_Missing"],
+                    "base_pack_fingerprint": pack_info["fingerprint"],
+                    "permission_granted": True,
+                    "request_id": "implicit-pack-test",
+                },
+            )
+        self.assertEqual("INVALID_ARGUMENT", raised.exception.code)
+        self.assertEqual("pack_path", raised.exception.details["argument"])
+        self.assertFalse((self.root / "SyncLive" / "Pending" / "implicit-pack-test.json").exists())
+
     def test_targeted_snapshot_is_bounded_bound_to_pack_and_atomic(self) -> None:
         pack_info = self.store.pack_info(self.complete)[0]
         result = rae.call_tool(
@@ -804,6 +865,12 @@ class ContractTests(unittest.TestCase):
                 request_id="stale-test",
             )
         self.assertEqual("BASE_PACK_FINGERPRINT_MISMATCH", stale.exception.code)
+        self.assertIn("available_complete_packs", stale.exception.details)
+        self.assertTrue(stale.exception.details["available_complete_packs"])
+        for choice in stale.exception.details["available_complete_packs"]:
+            self.assertTrue(choice["pack_id"])
+            self.assertTrue(choice["fingerprint"])
+        self.assertIn("hint", stale.exception.details)
 
         fingerprint = self.store.pack_info(self.complete)[0]["fingerprint"]
         invalid_cases = [

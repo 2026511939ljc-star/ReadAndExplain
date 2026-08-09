@@ -421,6 +421,35 @@ class ContextPackStore:
             warnings,
         )
 
+    def _complete_pack_choices(self, limit: int = 10) -> list[dict[str, Any]]:
+        if not self.packs_root.exists():
+            return []
+        candidates = [
+            path
+            for path in self.packs_root.iterdir()
+            if path.is_dir() and not path.name.casefold().endswith(".tmp") and (path / "context-pack.json").is_file()
+        ]
+        candidates.sort(key=lambda path: path.stat().st_mtime_ns, reverse=True)
+        choices: list[dict[str, Any]] = []
+        for path in candidates:
+            if len(choices) >= limit:
+                break
+            try:
+                info, _ = self.pack_info(path, validate=True)
+            except (OSError, RaeError):
+                continue
+            if info.get("state") not in {"complete", "legacy"}:
+                continue
+            choices.append(
+                {
+                    "pack_id": info["pack_id"],
+                    "state": info["state"],
+                    "fingerprint": info["fingerprint"],
+                    "created_at": info.get("created_at", ""),
+                }
+            )
+        return choices
+
     def list_packs(self, offset: int = 0, limit: int = 20) -> dict[str, Any]:
         if not self.packs_root.exists():
             return {"pack": None, "data": {"packs": []}, "page": page_info(offset, limit, 0, 0)}
@@ -1088,14 +1117,18 @@ class ContextPackStore:
     def locate_graph_target(
         self,
         asset: str,
-        query: str,
+        query: str | None,
         graph_id: str | None,
         target_kind: str,
         pack_path: str | None,
         offset: int,
         limit: int,
+        kind_filter: str | None = None,
     ) -> dict[str, Any]:
         pack, _, metadata, descriptor, metadata_path, graphs = self._graph_context(asset, pack_path)
+        normalized_query = "" if query is None else str(query).strip()
+        list_mode = not normalized_query
+        kind_needle = "" if kind_filter is None else str(kind_filter).strip().casefold()
         indexed_graphs = list(enumerate(graphs))
         if graph_id:
             graph, graph_index = self._resolve_graph(graphs, graph_id)
@@ -1104,8 +1137,8 @@ class ContextPackStore:
         for graph_index, graph in indexed_graphs:
             graph_pointer = f"/graphs/{graph_index}"
             if target_kind == "any":
-                rank = self._match_rank(query, [("id", graph.get("id")), ("name", graph.get("name")), ("kind", graph.get("kind"))])
-                if rank:
+                rank = (0, "id", str(graph.get("id", ""))) if list_mode else self._match_rank(query, [("id", graph.get("id")), ("name", graph.get("name")), ("kind", graph.get("kind"))])
+                if rank and self._kind_allows(kind_needle, graph.get("kind"), graph.get("className")):
                     evidence = self.evidence(pack, metadata_path, graph_pointer, descriptor["object_path"], graph_id=graph["id"])
                     candidate = {
                         "target_kind": "graph",
@@ -1113,7 +1146,7 @@ class ContextPackStore:
                         "graph_id": graph["id"],
                         "name": graph.get("name", ""),
                         "kind": graph.get("kind", ""),
-                        "match_type": ("exact_id", "exact_text", "prefix", "substring")[rank[0]],
+                        "match_type": "listed" if list_mode else ("exact_id", "exact_text", "prefix", "substring")[rank[0]],
                         "matched_field": rank[1],
                         "matched_text": rank[2],
                         "json_pointer": graph_pointer,
@@ -1123,11 +1156,15 @@ class ContextPackStore:
             for node_index, node in enumerate(graph["nodes"]):
                 node_pointer = f"{graph_pointer}/nodes/{node_index}"
                 if target_kind in {"any", "node"}:
-                    rank = self._match_rank(
-                        query,
-                        [(field, node.get(field)) for field in ("id", "name", "kind", "className", "title", "comment", "referencePath", "calleeGraphId", "direction", "type", "defaultValue")],
+                    rank = (
+                        (0, "id", str(node.get("id", "")))
+                        if list_mode
+                        else self._match_rank(
+                            query,
+                            [(field, node.get(field)) for field in ("id", "name", "kind", "className", "title", "comment", "referencePath", "calleeGraphId", "direction", "type", "defaultValue")],
+                        )
                     )
-                    if rank:
+                    if rank and self._kind_allows(kind_needle, node.get("kind"), node.get("className")):
                         evidence = self.evidence(pack, metadata_path, node_pointer, descriptor["object_path"], graph_id=graph["id"], node_id=node["id"])
                         candidate = {
                             "target_kind": "node",
@@ -1137,7 +1174,7 @@ class ContextPackStore:
                             "name": node.get("name", ""),
                             "kind": node.get("kind", node.get("className", "")),
                             "title": node.get("title", ""),
-                            "match_type": ("exact_id", "exact_text", "prefix", "substring")[rank[0]],
+                            "match_type": "listed" if list_mode else ("exact_id", "exact_text", "prefix", "substring")[rank[0]],
                             "matched_field": rank[1],
                             "matched_text": rank[2],
                             "json_pointer": node_pointer,
@@ -1147,11 +1184,15 @@ class ContextPackStore:
                 for pin_index, pin in enumerate(node.get("pins", [])):
                     if target_kind not in {"any", "pin"}:
                         continue
-                    rank = self._match_rank(
-                        query,
-                        [(field, pin.get(field)) for field in ("id", "name", "kind", "className", "title", "comment", "referencePath", "calleeGraphId", "direction", "type", "defaultValue")],
+                    rank = (
+                        (0, "id", str(pin.get("id", "")))
+                        if list_mode
+                        else self._match_rank(
+                            query,
+                            [(field, pin.get(field)) for field in ("id", "name", "kind", "className", "title", "comment", "referencePath", "calleeGraphId", "direction", "type", "defaultValue")],
+                        )
                     )
-                    if rank:
+                    if rank and self._kind_allows(kind_needle, pin.get("kind"), pin.get("className")):
                         pin_pointer = f"{node_pointer}/pins/{pin_index}"
                         evidence = self.evidence(
                             pack,
@@ -1172,32 +1213,81 @@ class ContextPackStore:
                             "direction": pin.get("direction", ""),
                             "type": pin.get("type", ""),
                             "default_value": pin.get("defaultValue", ""),
-                            "match_type": ("exact_id", "exact_text", "prefix", "substring")[rank[0]],
+                            "match_type": "listed" if list_mode else ("exact_id", "exact_text", "prefix", "substring")[rank[0]],
                             "matched_field": rank[1],
                             "matched_text": rank[2],
                             "json_pointer": pin_pointer,
                             "evidence": evidence,
                         }
                         matches.append(((rank[0], graph_index, 2, node_index, pin_index, pin["id"].casefold()), candidate, evidence))
-        matches.sort(key=lambda item: item[0])
+        if list_mode:
+            matches.sort(key=lambda item: (item[0][1], item[0][2], item[0][3], item[0][4]))
+        else:
+            matches.sort(key=lambda item: item[0])
         candidates = [item[1] for item in matches]
         selected, page = paginate(candidates, offset, limit, 100)
         selected_evidence = [item[2] for item in matches[offset : offset + len(selected)]]
-        resolution = "not_found" if not candidates else "unique" if len(candidates) == 1 else "ambiguous"
+        if list_mode:
+            resolution = "listed"
+        else:
+            resolution = "not_found" if not candidates else "unique" if len(candidates) == 1 else "ambiguous"
+        data = {
+            "query": normalized_query,
+            "target_kind": target_kind,
+            "list_mode": list_mode,
+            "resolution": resolution,
+            "candidates": selected,
+            "graph_index_source": "derived_metadata_graphs",
+        }
+        if kind_needle:
+            data["kind_filter"] = str(kind_filter).strip()
+        warnings = self._graph_warnings(metadata, graphs)
+        if resolution == "not_found":
+            available = self._node_name_samples(indexed_graphs)
+            data["available_samples"] = available
+            data["discovery_hint"] = "No target matched this query. Omit query to enumerate this Graph, or retry using one of available_samples. A miss does not prove the node, Graph or asset is absent."
+            warnings.append(
+                {
+                    "code": "TARGET_NOT_FOUND_SAMPLES_PROVIDED",
+                    "message": f"No candidate matched. Returned {len(available)} existing node samples so the Graph can still be explored without reading it in full.",
+                }
+            )
         return {
             "pack": pack,
             "asset": descriptor,
-            "data": {
-                "query": query,
-                "target_kind": target_kind,
-                "resolution": resolution,
-                "candidates": selected,
-                "graph_index_source": "derived_metadata_graphs",
-            },
+            "data": data,
             "evidence": selected_evidence,
             "page": page,
-            "warnings": self._graph_warnings(metadata, graphs),
+            "warnings": warnings,
         }
+
+    @staticmethod
+    def _kind_allows(kind_needle: str, *values: Any) -> bool:
+        if not kind_needle:
+            return True
+        for value in values:
+            if isinstance(value, str) and value.strip().casefold() == kind_needle:
+                return True
+        return False
+
+    @staticmethod
+    def _node_name_samples(indexed_graphs: list[tuple[int, dict[str, Any]]], limit: int = 10) -> list[dict[str, Any]]:
+        samples: list[dict[str, Any]] = []
+        for graph_index, graph in indexed_graphs:
+            for node_index, node in enumerate(graph.get("nodes", [])):
+                if len(samples) >= limit:
+                    return samples
+                samples.append(
+                    {
+                        "graph_id": graph.get("id", ""),
+                        "node_id": node.get("id", ""),
+                        "name": node.get("name", ""),
+                        "title": node.get("title", ""),
+                        "kind": node.get("kind", node.get("className", "")),
+                        "json_pointer": f"/graphs/{graph_index}/nodes/{node_index}",
+                    }
+                )
+        return samples
 
     @staticmethod
     def _compact_pin(pin: dict[str, Any], pointer: str) -> dict[str, Any]:
@@ -1771,7 +1861,13 @@ class ContextPackStore:
             raise RaeError(
                 "BASE_PACK_FINGERPRINT_MISMATCH",
                 "The supplied base Pack fingerprint does not match the selected complete Pack.",
-                {"pack_id": base_info["pack_id"], "expected": base_info["fingerprint"], "received": expected_fingerprint},
+                {
+                    "pack_id": base_info["pack_id"],
+                    "expected": base_info["fingerprint"],
+                    "received": expected_fingerprint,
+                    "available_complete_packs": self._complete_pack_choices(),
+                    "hint": "Pass pack_path together with the matching base_pack_fingerprint from available_complete_packs. Never retry against a different Pack than the one the evidence came from.",
+                },
             )
 
         validated_id = self._validate_request_id(request_id or f"capture_{uuid.uuid4().hex}")
@@ -1866,17 +1962,18 @@ TOOLS = [
     tool("get_asset_outline", "Get compact derived Graph and Readable indexes plus dependency coverage.", {"asset": {"type": "string", "minLength": 1}, "pack_path": PACK_ARG}, ["asset"]),
     tool(
         "locate_graph_target",
-        "Locate Graph, Node or Pin candidates with deterministic exact-id, exact-text, prefix and substring ranking.",
+        "Locate Graph, Node or Pin candidates with deterministic exact-id, exact-text, prefix and substring ranking. Omit query to enumerate targets in Graph IR order for discovery without reading the full Graph.",
         {
             "asset": {"type": "string", "minLength": 1},
-            "query": {"type": "string", "minLength": 1},
+            "query": {"type": "string"},
             "graph_id": {"type": "string", "minLength": 1},
             "target_kind": {"type": "string", "enum": ["any", "node", "pin"], "default": "any"},
+            "kind_filter": {"type": "string", "minLength": 1},
             "pack_path": PACK_ARG,
             "offset": OFFSET_ARG,
             "limit": {"type": "integer", "minimum": 1, "maximum": 100, "default": 20},
         },
-        ["asset", "query"],
+        ["asset"],
     ),
     tool(
         "get_graph_subgraph",
@@ -1923,17 +2020,17 @@ TOOLS = [
     tool("search_export_text", "Search readable documents and metadata without loading complete files.", {"query": {"type": "string", "minLength": 1}, "asset": {"type": "string"}, "pack_path": PACK_ARG, "offset": OFFSET_ARG, "limit": {"type": "integer", "minimum": 1, "maximum": 100, "default": 20}}, ["query"]),
     tool(
         "request_targeted_snapshot",
-        "After explicit user permission, atomically queue a bounded UE editor request for 1-5 /Game/ assets and dependency depth 0-1. The request is bound to an exact complete base Pack fingerprint.",
+        "After explicit user permission, atomically queue a bounded UE editor request for 1-5 /Game/ assets and dependency depth 0-1. pack_path is mandatory so the request is always bound to an explicitly chosen complete base Pack fingerprint.",
         {
             "asset_paths": {"type": "array", "items": {"type": "string", "pattern": "^/Game/"}, "minItems": 1, "maxItems": 5, "uniqueItems": True},
             "base_pack_fingerprint": {"type": "string", "minLength": 1},
             "permission_granted": {"type": "boolean", "const": True},
             "dependency_depth": {"type": "integer", "minimum": 0, "maximum": 1, "default": 0},
-            "pack_path": PACK_ARG,
+            "pack_path": {"type": "string", "minLength": 1},
             "request_id": {"type": "string", "pattern": "^[A-Za-z0-9_-]{1,64}$"},
             "reason": {"type": "string", "maxLength": 500},
         },
-        ["asset_paths", "base_pack_fingerprint", "permission_granted"],
+        ["asset_paths", "base_pack_fingerprint", "permission_granted", "pack_path"],
         read_only=False,
         idempotent=False,
     ),
@@ -2056,12 +2153,13 @@ def call_tool(store: ContextPackStore, name: str, arguments: dict[str, Any]) -> 
     elif name == "locate_graph_target":
         payload = store.locate_graph_target(
             arguments["asset"],
-            arguments["query"],
+            arguments.get("query"),
             arguments.get("graph_id"),
             arguments.get("target_kind", "any"),
             arguments.get("pack_path"),
             offset,
             limit,
+            arguments.get("kind_filter"),
         )
     elif name == "get_graph_subgraph":
         payload = store.graph_subgraph(
