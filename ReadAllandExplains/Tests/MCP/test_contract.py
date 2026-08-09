@@ -548,16 +548,37 @@ class ContractTests(unittest.TestCase):
         )
         self.assertEqual(["node-output", "node-multiply", "node-source"], [node["node_id"] for node in result["data"]["nodes"]])
 
-    def test_graph_data_invalid_and_missing_index_use_stable_errors(self) -> None:
+    def test_legacy_graph_diagnostics_do_not_block_outline_or_location(self) -> None:
         metadata_path = self.complete / "Niagara" / "NS_Test.meta.json"
         metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
         metadata["graphs"][0]["links"][0]["fromPinId"] = "missing-pin"
         self._dump(metadata_path, metadata)
         self.store = rae.ContextPackStore(self.root)
+
+        outline = rae.call_tool(self.store, "get_asset_outline", {"asset": "NS_Test"})
+        located = rae.call_tool(
+            self.store,
+            "locate_graph_target",
+            {"asset": "NS_Test", "query": "node-source", "target_kind": "node"},
+        )
+        for result in (outline, located):
+            self.assertIn("GRAPH_LINKS_INCOMPLETE", {warning["code"] for warning in result["warnings"]})
+        self.assertEqual("unique", located["data"]["resolution"])
+
+    def test_duplicate_node_identity_blocks_subgraph_but_not_outline(self) -> None:
+        metadata_path = self.complete / "Niagara" / "NS_Test.meta.json"
+        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+        metadata["graphs"][0]["nodes"][2]["id"] = "node-source"
+        self._dump(metadata_path, metadata)
+        self.store = rae.ContextPackStore(self.root)
+
+        outline = rae.call_tool(self.store, "get_asset_outline", {"asset": "NS_Test"})
+        self.assertIn("GRAPH_IDENTITY_DEGRADED", {warning["code"] for warning in outline["warnings"]})
         with self.assertRaises(rae.RaeError) as invalid:
-            self.store.locate_graph_target("NS_Test", "Source", None, "any", None, 0, 20)
+            self.store.graph_subgraph("NS_Test", "graph-1", "node-multiply", "upstream", 2, 40, 20000, None)
         self.assertEqual("GRAPH_DATA_INVALID", invalid.exception.code)
 
+    def test_missing_index_uses_stable_error(self) -> None:
         material_path = self.complete / "Materials" / "M_Test.meta.json"
         material = json.loads(material_path.read_text(encoding="utf-8"))
         material.pop("graphs")

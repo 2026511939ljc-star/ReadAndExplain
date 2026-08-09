@@ -684,23 +684,16 @@ class ContextPackStore:
         graphs = metadata["graphs"]
         if not isinstance(graphs, list):
             raise RaeError("GRAPH_DATA_INVALID", "metadata.graphs must be an array.")
-        graph_ids: set[str] = set()
         for graph_index, graph in enumerate(graphs):
             if not isinstance(graph, dict):
                 raise RaeError("GRAPH_DATA_INVALID", "Every graph must be an object.", {"json_pointer": f"/graphs/{graph_index}"})
             graph_id = graph.get("id")
             if not isinstance(graph_id, str) or not graph_id:
                 raise RaeError("GRAPH_DATA_INVALID", "Every graph must have a non-empty string id.", {"json_pointer": f"/graphs/{graph_index}/id"})
-            marker = graph_id.casefold()
-            if marker in graph_ids:
-                raise RaeError("GRAPH_DATA_INVALID", "Graph ids must be unique.", {"graph_id": graph_id})
-            graph_ids.add(marker)
             nodes = graph.get("nodes")
             links = graph.get("links")
             if not isinstance(nodes, list) or not isinstance(links, list):
                 raise RaeError("GRAPH_DATA_INVALID", "Every graph must contain node and link arrays.", {"graph_id": graph_id})
-            node_ids: set[str] = set()
-            node_pin_ids: dict[str, set[str]] = {}
             for node_index, node in enumerate(nodes):
                 pointer = f"/graphs/{graph_index}/nodes/{node_index}"
                 if not isinstance(node, dict):
@@ -708,14 +701,9 @@ class ContextPackStore:
                 node_id = node.get("id")
                 if not isinstance(node_id, str) or not node_id:
                     raise RaeError("GRAPH_DATA_INVALID", "Every graph node must have a non-empty string id.", {"json_pointer": pointer + "/id"})
-                node_marker = node_id.casefold()
-                if node_marker in node_ids:
-                    raise RaeError("GRAPH_DATA_INVALID", "Node ids must be unique within a graph.", {"graph_id": graph_id, "node_id": node_id})
-                node_ids.add(node_marker)
                 pins = node.get("pins", [])
                 if not isinstance(pins, list):
                     raise RaeError("GRAPH_DATA_INVALID", "Node pins must be an array.", {"json_pointer": pointer + "/pins"})
-                pin_ids: set[str] = set()
                 for pin_index, pin in enumerate(pins):
                     pin_pointer = f"{pointer}/pins/{pin_index}"
                     if not isinstance(pin, dict):
@@ -723,30 +711,72 @@ class ContextPackStore:
                     pin_id = pin.get("id")
                     if not isinstance(pin_id, str) or not pin_id:
                         raise RaeError("GRAPH_DATA_INVALID", "Every pin must have a non-empty string id.", {"json_pointer": pin_pointer + "/id"})
-                    pin_marker = pin_id.casefold()
-                    if pin_marker in pin_ids:
-                        raise RaeError("GRAPH_DATA_INVALID", "Pin ids must be unique within a node.", {"graph_id": graph_id, "node_id": node_id, "pin_id": pin_id})
-                    pin_ids.add(pin_marker)
-                node_pin_ids[node_marker] = pin_ids
             for link_index, link in enumerate(links):
-                pointer = f"/graphs/{graph_index}/links/{link_index}"
                 if not isinstance(link, dict):
-                    raise RaeError("GRAPH_DATA_INVALID", "Every graph link must be an object.", {"json_pointer": pointer})
-                endpoints = (("fromNodeId", "fromPinId"), ("toNodeId", "toPinId"))
-                for node_field, pin_field in endpoints:
-                    node_id = link.get(node_field)
-                    if not isinstance(node_id, str) or node_id.casefold() not in node_ids:
-                        raise RaeError("GRAPH_DATA_INVALID", "Graph link references an unknown node.", {"json_pointer": pointer + f"/{node_field}", "node_id": node_id})
-                    pin_id = link.get(pin_field)
-                    if not isinstance(pin_id, str) or pin_id.casefold() not in node_pin_ids[node_id.casefold()]:
-                        raise RaeError("GRAPH_DATA_INVALID", "Graph link references an unknown pin on its node.", {"json_pointer": pointer + f"/{pin_field}", "pin_id": pin_id, "node_id": node_id})
+                    raise RaeError("GRAPH_DATA_INVALID", "Every graph link must be an object.", {"json_pointer": f"/graphs/{graph_index}/links/{link_index}"})
         return graphs
 
     @staticmethod
-    def _graph_warning(metadata: dict[str, Any]) -> list[dict[str, str]]:
+    def _graph_warnings(metadata: dict[str, Any], graphs: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        warnings: list[dict[str, Any]] = []
         if not isinstance(metadata.get("graphIndex"), dict):
-            return [{"code": "GRAPH_INDEX_DERIVED", "message": "Graph index was derived from metadata.graphs."}]
-        return []
+            warnings.append({"code": "GRAPH_INDEX_DERIVED", "message": "Graph index was derived from metadata.graphs."})
+        duplicate_graph_ids = 0
+        duplicate_node_ids = 0
+        duplicate_node_pin_ids = 0
+        unknown_node_endpoints = 0
+        unknown_pin_endpoints = 0
+        graph_id_counts: dict[str, int] = {}
+        for graph in graphs:
+            graph_marker = str(graph["id"]).casefold()
+            graph_id_counts[graph_marker] = graph_id_counts.get(graph_marker, 0) + 1
+            node_id_counts: dict[str, int] = {}
+            node_pin_sets: dict[str, list[set[str]]] = {}
+            for node in graph["nodes"]:
+                node_marker = str(node["id"]).casefold()
+                node_id_counts[node_marker] = node_id_counts.get(node_marker, 0) + 1
+                pin_ids: set[str] = set()
+                for pin in node.get("pins", []):
+                    pin_marker = str(pin["id"]).casefold()
+                    if pin_marker in pin_ids:
+                        duplicate_node_pin_ids += 1
+                    pin_ids.add(pin_marker)
+                node_pin_sets.setdefault(node_marker, []).append(pin_ids)
+            duplicate_node_ids += sum(count - 1 for count in node_id_counts.values() if count > 1)
+            for link in graph["links"]:
+                for node_field, pin_field in (("fromNodeId", "fromPinId"), ("toNodeId", "toPinId")):
+                    node_marker = str(link.get(node_field, "")).casefold()
+                    pin_marker = str(link.get(pin_field, "")).casefold()
+                    owners = node_pin_sets.get(node_marker)
+                    if not owners:
+                        unknown_node_endpoints += 1
+                    elif not any(pin_marker in pins for pins in owners):
+                        unknown_pin_endpoints += 1
+        duplicate_graph_ids = sum(count - 1 for count in graph_id_counts.values() if count > 1)
+        if duplicate_graph_ids or duplicate_node_ids or duplicate_node_pin_ids:
+            warnings.append(
+                {
+                    "code": "GRAPH_IDENTITY_DEGRADED",
+                    "message": "Some legacy Graph ids are not unique enough for unambiguous topology traversal.",
+                    "details": {
+                        "duplicate_graph_ids": duplicate_graph_ids,
+                        "duplicate_node_ids": duplicate_node_ids,
+                        "duplicate_pin_ids_within_node": duplicate_node_pin_ids,
+                    },
+                }
+            )
+        if unknown_node_endpoints or unknown_pin_endpoints:
+            warnings.append(
+                {
+                    "code": "GRAPH_LINKS_INCOMPLETE",
+                    "message": "Some legacy Links cannot be fully resolved to exported Node/Pin facts.",
+                    "details": {
+                        "unknown_node_endpoints": unknown_node_endpoints,
+                        "unknown_pin_endpoints": unknown_pin_endpoints,
+                    },
+                }
+            )
+        return warnings
 
     def _graph_context(
         self, asset: str, pack_path: str | None
@@ -766,7 +796,7 @@ class ContextPackStore:
             ("parameters", ("parameter", "configuration", "settings", "参数", "配置")),
             ("relationships", ("relationship", "dependenc", "referenc", "关联", "依赖", "引用", "追踪候选")),
             ("niagara-details", ("niagara", "renderer", "simulation stage", "module stack", "script version", "emitter", "handle ", "渲染器", "模拟阶段", "模块栈")),
-            ("graph-ir", ("graph", "node", "expression", "hlsl", "节点", "图结构", "表达式")),
+            ("graph-ir", ("graph", "node", "expression", "hlsl", "节点", "图结构", "结构化图", "表达式")),
             ("technical", ("technical", "diagnostic", "coverage", "texture", "sampler", "render pass", "availability", "complete table", "geometry", "unknown", "技术", "诊断", "覆盖", "纹理", "采样", "可用性")),
         )
         for section_id, markers in groups:
@@ -827,6 +857,19 @@ class ContextPackStore:
                     "character_count": len(text),
                 }
             ]
+        outer_headings: list[tuple[int, int, str]] = []
+        inside_technical = False
+        for heading in headings:
+            semantic = cls._semantic_section_id(heading[2])
+            if inside_technical:
+                if semantic == "ai-prompt":
+                    outer_headings.append(heading)
+                    inside_technical = False
+                continue
+            outer_headings.append(heading)
+            if semantic == "technical":
+                inside_technical = True
+        headings = outer_headings
         sections: list[dict[str, Any]] = []
         semantic_counts: dict[str, int] = {}
         unknown_count = 0
@@ -878,7 +921,7 @@ class ContextPackStore:
         graph_source = "derived_metadata_graphs"
         try:
             graphs = self._validated_graphs(metadata)
-            warnings.extend(self._graph_warning(metadata))
+            warnings.extend(self._graph_warnings(metadata, graphs))
             compact_graphs = []
             for graph_index, graph in enumerate(graphs):
                 nodes = graph["nodes"]
@@ -913,13 +956,24 @@ class ContextPackStore:
             readable_source = "unavailable"
             missing_fields.append("readable")
             warnings.append({"code": "READABLE_NOT_FOUND", "message": "Readable document is unavailable."})
+        coverage_summary = {
+            key: coverage[key]
+            for key in (
+                "metadata_available",
+                "readable_available",
+                "dependency_total",
+                "exported_dependency_count",
+                "missing_project_dependency_count",
+                "external_dependency_count",
+            )
+        }
         return {
             "pack": pack,
             "asset": descriptor,
             "data": {
                 "graphs": compact_graphs,
                 "readable_sections": readable_sections,
-                "coverage": coverage,
+                "coverage": coverage_summary,
                 "graph_index_source": graph_source,
                 "readable_index_source": readable_source,
             },
@@ -1142,7 +1196,7 @@ class ContextPackStore:
             },
             "evidence": selected_evidence,
             "page": page,
-            "warnings": self._graph_warning(metadata),
+            "warnings": self._graph_warnings(metadata, graphs),
         }
 
     @staticmethod
@@ -1198,6 +1252,28 @@ class ContextPackStore:
         pack, _, metadata, descriptor, metadata_path, graphs = self._graph_context(asset, pack_path)
         graph, graph_index = self._resolve_graph(graphs, graph_id)
         nodes = graph["nodes"]
+        node_id_counts: dict[str, int] = {}
+        for node in nodes:
+            marker = node["id"].casefold()
+            node_id_counts[marker] = node_id_counts.get(marker, 0) + 1
+        duplicate_node_ids = [node["id"] for node in nodes if node_id_counts[node["id"].casefold()] > 1]
+        known_node_ids = set(node_id_counts)
+        unknown_node_endpoints = [
+            link.get(field, "")
+            for link in graph["links"]
+            for field in ("fromNodeId", "toNodeId")
+            if str(link.get(field, "")).casefold() not in known_node_ids
+        ]
+        if duplicate_node_ids or unknown_node_endpoints:
+            raise RaeError(
+                "GRAPH_DATA_INVALID",
+                "Graph topology cannot be traversed unambiguously from this legacy snapshot.",
+                {
+                    "graph_id": graph_id,
+                    "duplicate_node_ids": sorted(set(duplicate_node_ids))[:20],
+                    "unknown_node_endpoints": sorted(set(str(value) for value in unknown_node_endpoints))[:20],
+                },
+            )
         node_by_id = {node["id"].casefold(): (index, node) for index, node in enumerate(nodes)}
         target_matches: list[tuple[str, int, int | None, dict[str, Any]]] = []
         needle = target_id.casefold()
@@ -1386,7 +1462,7 @@ class ContextPackStore:
                     pin_id=target_value["id"],
                 )
             )
-        warnings = self._graph_warning(metadata)
+        warnings = self._graph_warnings(metadata, graphs)
         if reasons:
             warnings.append({"code": "BUDGET_TRUNCATED", "message": "Subgraph was truncated by one or more requested budgets."})
         return {"pack": pack, "asset": descriptor, "data": content, "evidence": evidence, "warnings": warnings}
