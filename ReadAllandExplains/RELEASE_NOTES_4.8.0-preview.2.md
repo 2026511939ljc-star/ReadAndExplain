@@ -1,8 +1,33 @@
-# ReadAllandExplains 4.8.0-preview.1
+# ReadAllandExplains 4.8.0-preview.2
 
-ReadAllandExplains 4.8.0-preview.1 turns the Context Pack from a document you must read whole into an evidence base you can query progressively. 4.7 established whether the facts were authoritative, complete and publishable. 4.8 makes those facts answerable without spending the entire budget on a single read.
+ReadAllandExplains 4.8.0-preview.2 是 `4.8.0-preview.1` 的**稳定化版本**。查询能力、接口契约与验证结论完全一致，本版只做打包与元数据的稳定性修复，不引入任何行为变更。
 
-ReadAllandExplains 4.8.0-preview.1 将 Context Pack 从"必须整份读完的文档"变为"可按需查询的证据库"。4.7 解决的是事实是否权威、是否完整、是否可发布；4.8 让这些事实可以在不耗尽预算的前提下被回答。
+This is a **stabilization release** over `4.8.0-preview.1`. Query capability, interface contracts and verification results are identical; this version only hardens packaging and metadata, with no behavioural change.
+
+### 本版修复 / Fixed in this release
+
+- `ReadAllandExplains.uplugin` 的 `Description` 曾包含一个 U+2014 破折号。该字符编码本身正确，但在以 GBK 等非 UTF-8 代码页解读的终端与工具中会显示为乱码，且在部分 UE 插件浏览器环境下观感不稳定。现已替换为 ASCII 连字符，**整个 `.uplugin` 文件现为纯 ASCII，跨环境零显示风险**。
+- 已核验全部打包元数据（`plugin.json`、`marketplace.json`、`FilterPlugin.ini`、`.mcp.json`）均无 BOM、无智能标点、无替换字符。
+- 发布包已通过真实安装验证：干净目录解压、`.uplugin` 可解析、MCP 可启动、`tools/list` 返回 12 个工具且 `locate_graph_target` 仅需 `asset`、`request_targeted_snapshot` 含必填 `pack_path`，并对真实 Context Pack 成功执行列举查询（`resolution=listed`、`total=10`、`json_pointer` 顺序正确）。
+
+`4.8.0-preview.1` 的标签与产物保持不变，不受本版影响。The `4.8.0-preview.1` tag and artifacts remain untouched.
+
+### 发布包校验 / Package verification
+
+| 项目 | 值 |
+|---|---|
+| 文件名 | `ReadAllandExplains_4.8.0-preview.2_UE5.7_Win64.zip` |
+| 字节数 | `144580` |
+| SHA-256 | `53CBDF38BBF4454FC4001D8C022C4F0E4D985CF0332401FE7131610BDEE56710` |
+| 契约测试 | 51 通过 |
+| Golden 回归 | 22 通过 |
+| 安装验证 | 干净目录解压、`.uplugin` 纯 ASCII 且可解析、MCP 启动正常、12 工具就位、真实 Pack 端到端查询成功 |
+
+---
+
+ReadAllandExplains 4.8.0-preview.2 turns the Context Pack from a document you must read whole into an evidence base you can query progressively. 4.7 established whether the facts were authoritative, complete and publishable. 4.8 makes those facts answerable without spending the entire budget on a single read.
+
+ReadAllandExplains 4.8.0-preview.2 将 Context Pack 从"必须整份读完的文档"变为"可按需查询的证据库"。4.7 解决的是事实是否权威、是否完整、是否可发布；4.8 让这些事实可以在不耗尽预算的前提下被回答。
 
 This is a **preview release**. All new capability lives in the MCP layer. The UE editor plugin, the C++ code and the export structure are unchanged from 4.7.0, so existing 4.7 Context Packs work without re-export.
 

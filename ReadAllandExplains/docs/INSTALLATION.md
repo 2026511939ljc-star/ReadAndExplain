@@ -1,6 +1,6 @@
-# ReadAllandExplains 4.8.0-preview.1 安装指南
+# ReadAllandExplains 4.8.0-preview.2 安装指南
 
-ReadAllandExplains 4.8.0-preview.1 面向 Unreal Engine 5.7 / Windows 64 位。Release ZIP 同时包含 UE 编辑器插件、CodeBuddy Skill、只读 MCP 与诊断命令。
+ReadAllandExplains 4.8.0-preview.2 面向 Unreal Engine 5.7 / Windows 64 位。Release ZIP 同时包含 UE 编辑器插件、CodeBuddy Skill、只读 MCP 与诊断命令。
 
 ## 环境要求
 
@@ -12,7 +12,7 @@ ReadAllandExplains 4.8.0-preview.1 面向 Unreal Engine 5.7 / Windows 64 位。R
 ## 安装 UE 插件
 
 1. 关闭 Unreal Editor。
-2. 从 GitHub Release 下载 `ReadAllandExplains_4.8.0-preview.1_UE5.7_Win64.zip`。
+2. 从 GitHub Release 下载 `ReadAllandExplains_4.8.0-preview.2_UE5.7_Win64.zip`。
 3. 在项目根目录创建 `Plugins` 文件夹（若尚不存在）。
 4. 解压后确认描述符路径为：
 
@@ -97,7 +97,7 @@ codebuddy --plugin-dir "D:/YourProject/Plugins/ReadAllandExplains"
 1. 关闭 Unreal Editor 和正在使用该插件的 CodeBuddy 会话。
 2. 备份现有 `Plugins/ReadAllandExplains` 目录。
 3. 删除旧插件目录，避免旧文件残留。
-4. 解压 4.8.0-preview.1 ZIP 到相同位置。
+4. 解压 4.8.0-preview.2 ZIP 到相同位置。
 5. 重启 UE，并在 CodeBuddy 中执行 `/reload-plugins`。
 6. 再次运行诊断命令并生成一个新的 Context Pack。
 
@@ -136,7 +136,7 @@ codebuddy --plugin-dir "D:/YourProject/Plugins/ReadAllandExplains"
 
 # Installation (English)
 
-ReadAllandExplains 4.8.0-preview.1 targets Unreal Engine 5.7 on Windows 64-bit. The Release ZIP includes the UE editor plugin, CodeBuddy Skill, read-only MCP server, and diagnostics command.
+ReadAllandExplains 4.8.0-preview.2 targets Unreal Engine 5.7 on Windows 64-bit. The Release ZIP includes the UE editor plugin, CodeBuddy Skill, read-only MCP server, and diagnostics command.
 
 ## Requirements
 
@@ -148,7 +148,7 @@ ReadAllandExplains 4.8.0-preview.1 targets Unreal Engine 5.7 on Windows 64-bit. 
 ## Install the UE plugin
 
 1. Close Unreal Editor.
-2. Download `ReadAllandExplains_4.8.0-preview.1_UE5.7_Win64.zip` from GitHub Releases.
+2. Download `ReadAllandExplains_4.8.0-preview.2_UE5.7_Win64.zip` from GitHub Releases.
 3. Extract it so the descriptor is located at:
 
 ```text
@@ -192,7 +192,7 @@ $env:READALL_EXPORT_ROOT = "D:/YourProject/Saved/ReadAllandExplainsExports"
 
 ## Upgrade from 4.6
 
-Close UE and CodeBuddy, back up and remove the old plugin directory, extract 4.8.0-preview.1 to the same location, restart UE, reload CodeBuddy plugins, run diagnostics, and generate a new Pack. Existing 4.6 Packs remain readable, but regenerating important snapshots is recommended.
+Close UE and CodeBuddy, back up and remove the old plugin directory, extract 4.8.0-preview.2 to the same location, restart UE, reload CodeBuddy plugins, run diagnostics, and generate a new Pack. Existing 4.6 Packs remain readable, but regenerating important snapshots is recommended.
 
 ## Uninstall
 
