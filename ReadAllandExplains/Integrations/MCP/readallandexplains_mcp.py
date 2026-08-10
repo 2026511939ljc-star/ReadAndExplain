@@ -746,9 +746,45 @@ class ContextPackStore:
         return graphs
 
     @staticmethod
+    def _native_graph_index(metadata: dict[str, Any], graphs: list[dict[str, Any]]) -> dict[str, Any] | None:
+        """Returns the root graphIndex only when it provably matches the exported graphs.
+
+        CP7 makes the UE exporter emit graphIndex as a Raw Fact. Presence alone is
+        not enough to trust it: a stale or hand-edited index that disagrees with
+        metadata.graphs would silently corrupt every answer built on top of it.
+        A mismatch is therefore treated as "no native index" and the caller falls
+        back to deriving one, which is always reproducible from the graphs array.
+        """
+        index = metadata.get("graphIndex")
+        if not isinstance(index, dict):
+            return None
+        if index.get("source") != "native":
+            return None
+
+        locators = index.get("graphs")
+        if not isinstance(locators, list) or len(locators) != len(graphs):
+            return None
+
+        for locator, graph in zip(locators, graphs):
+            if not isinstance(locator, dict):
+                return None
+            if locator.get("graphId") != graph.get("id"):
+                return None
+            nodes = graph["nodes"]
+            expected = (
+                len(nodes),
+                sum(len(node.get("pins") or []) for node in nodes),
+                len(graph["links"]),
+            )
+            actual = (locator.get("nodeCount"), locator.get("pinCount"), locator.get("linkCount"))
+            if expected != actual:
+                return None
+        return index
+
+    @staticmethod
     def _graph_warnings(metadata: dict[str, Any], graphs: list[dict[str, Any]]) -> list[dict[str, Any]]:
         warnings: list[dict[str, Any]] = []
-        if not isinstance(metadata.get("graphIndex"), dict):
+        if ContextPackStore._native_graph_index(metadata, graphs) is None:
             warnings.append({"code": "GRAPH_INDEX_DERIVED", "message": "Graph index was derived from metadata.graphs."})
         duplicate_graph_ids = 0
         duplicate_node_ids = 0
@@ -950,6 +986,8 @@ class ContextPackStore:
         graph_source = "derived_metadata_graphs"
         try:
             graphs = self._validated_graphs(metadata)
+            if self._native_graph_index(metadata, graphs) is not None:
+                graph_source = "native_metadata_graph_index"
             warnings.extend(self._graph_warnings(metadata, graphs))
             compact_graphs = []
             for graph_index, graph in enumerate(graphs):

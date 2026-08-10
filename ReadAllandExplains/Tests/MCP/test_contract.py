@@ -357,6 +357,68 @@ class ContractTests(unittest.TestCase):
         self.assertIn("graphs", missing["missing_fields"])
         self.assertIn("GRAPH_INDEX_UNAVAILABLE", {warning["code"] for warning in missing["warnings"]})
 
+    def _inject_native_graph_index(self, metadata_path: Path) -> dict[str, Any]:
+        """Adds a root graphIndex matching what the CP7 exporter emits."""
+        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+        locators = []
+        for graph_index, graph in enumerate(metadata["graphs"]):
+            nodes = graph.get("nodes") or []
+            locators.append(
+                {
+                    "graphId": graph["id"],
+                    "name": graph.get("name", ""),
+                    "kind": graph.get("kind", ""),
+                    "nodeCount": len(nodes),
+                    "pinCount": sum(len(node.get("pins") or []) for node in nodes),
+                    "linkCount": len(graph.get("links") or []),
+                    "jsonPointer": f"/graphs/{graph_index}",
+                }
+            )
+        metadata["graphIndex"] = {
+            "indexVersion": 1,
+            "source": "native",
+            "graphCount": len(locators),
+            "nodeCount": sum(item["nodeCount"] for item in locators),
+            "pinCount": sum(item["pinCount"] for item in locators),
+            "linkCount": sum(item["linkCount"] for item in locators),
+            "graphs": locators,
+        }
+        self._dump(metadata_path, metadata)
+        self.store = rae.ContextPackStore(self.root)
+        return metadata
+
+    def test_native_graph_index_is_reported_and_clears_derived_warning(self) -> None:
+        metadata_path = self.complete / "Niagara" / "NS_Test.meta.json"
+        self._inject_native_graph_index(metadata_path)
+        result = rae.call_tool(self.store, "get_asset_outline", {"asset": "NS_Test"})
+        self.assertEqual("native_metadata_graph_index", result["data"]["graph_index_source"])
+        self.assertNotIn("GRAPH_INDEX_DERIVED", {warning["code"] for warning in result["warnings"]})
+        # Counts must stay identical to the derived path: the index is a Raw Fact,
+        # not a different opinion about the graph.
+        self.assertEqual((3, 5, 2), (result["data"]["graphs"][0]["node_count"], result["data"]["graphs"][0]["pin_count"], result["data"]["graphs"][0]["edge_count"]))
+
+    def test_inconsistent_native_graph_index_falls_back_to_derived(self) -> None:
+        metadata_path = self.complete / "Niagara" / "NS_Test.meta.json"
+        metadata = self._inject_native_graph_index(metadata_path)
+        # A stale index that disagrees with metadata.graphs must never be trusted.
+        metadata["graphIndex"]["graphs"][0]["nodeCount"] = 999
+        self._dump(metadata_path, metadata)
+        self.store = rae.ContextPackStore(self.root)
+        result = rae.call_tool(self.store, "get_asset_outline", {"asset": "NS_Test"})
+        self.assertEqual("derived_metadata_graphs", result["data"]["graph_index_source"])
+        self.assertIn("GRAPH_INDEX_DERIVED", {warning["code"] for warning in result["warnings"]})
+        self.assertEqual(3, result["data"]["graphs"][0]["node_count"])
+
+    def test_graph_index_without_native_source_is_not_trusted(self) -> None:
+        metadata_path = self.complete / "Niagara" / "NS_Test.meta.json"
+        metadata = self._inject_native_graph_index(metadata_path)
+        metadata["graphIndex"].pop("source")
+        self._dump(metadata_path, metadata)
+        self.store = rae.ContextPackStore(self.root)
+        result = rae.call_tool(self.store, "get_asset_outline", {"asset": "NS_Test"})
+        self.assertEqual("derived_metadata_graphs", result["data"]["graph_index_source"])
+        self.assertIn("GRAPH_INDEX_DERIVED", {warning["code"] for warning in result["warnings"]})
+
     def test_locate_graph_target_handles_graph_node_pin_and_resolution(self) -> None:
         graph = rae.call_tool(
             self.store,
