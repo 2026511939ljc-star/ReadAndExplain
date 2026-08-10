@@ -231,6 +231,75 @@ namespace ReadAllDocumentIRImpl
 		return Json;
 	}
 
+	/**
+	 * Builds the native graphIndex for one graph.
+	 *
+	 * This is a Raw Fact produced by the exporter, not a Derived View rebuilt by a
+	 * consumer. MCP 4.8 derives an equivalent index in memory and flags it with
+	 * GRAPH_INDEX_DERIVED; when this field is present that warning is unnecessary.
+	 *
+	 * Ordering rule: every array preserves the original graph IR order so that a
+	 * native index and a derived index enumerate targets identically. Do not sort.
+	 */
+	static TSharedRef<FJsonObject> MakeGraphIndexJson(const FReadAllGraphIR& Graph)
+	{
+		TSharedRef<FJsonObject> Index = MakeShared<FJsonObject>();
+
+		int32 PinCount = 0;
+		for (const FReadAllGraphNodeIR& Node : Graph.Nodes)
+		{
+			PinCount += Node.Pins.Num();
+		}
+		Index->SetNumberField(TEXT("nodeCount"), Graph.Nodes.Num());
+		Index->SetNumberField(TEXT("pinCount"), PinCount);
+		Index->SetNumberField(TEXT("linkCount"), Graph.Links.Num());
+
+		// A node is an entry point when no link terminates on it. Root and output
+		// nodes therefore surface first without needing a class-name allow-list.
+		TSet<FString> NodesWithIncomingLinks;
+		NodesWithIncomingLinks.Reserve(Graph.Links.Num());
+		for (const FReadAllGraphLinkIR& Link : Graph.Links)
+		{
+			NodesWithIncomingLinks.Add(Link.ToNodeId);
+		}
+
+		TArray<TSharedPtr<FJsonValue>> EntryPoints;
+		TArray<TSharedPtr<FJsonValue>> SearchIndex;
+		SearchIndex.Reserve(Graph.Nodes.Num());
+
+		for (int32 NodeIndex = 0; NodeIndex < Graph.Nodes.Num(); ++NodeIndex)
+		{
+			const FReadAllGraphNodeIR& Node = Graph.Nodes[NodeIndex];
+
+			// json_pointer lets a consumer cite the exact evidence location without
+			// guessing how the array was serialised.
+			const FString NodePointer = FString::Printf(TEXT("/nodes/%d"), NodeIndex);
+
+			TSharedRef<FJsonObject> Entry = MakeShared<FJsonObject>();
+			Entry->SetStringField(TEXT("nodeId"), Node.Id);
+			Entry->SetStringField(TEXT("name"), Node.Name);
+			Entry->SetStringField(TEXT("className"), Node.ClassName);
+			Entry->SetStringField(TEXT("title"), Node.Title);
+			Entry->SetNumberField(TEXT("pinCount"), Node.Pins.Num());
+			Entry->SetStringField(TEXT("jsonPointer"), NodePointer);
+			SearchIndex.Add(MakeShared<FJsonValueObject>(Entry));
+
+			if (!NodesWithIncomingLinks.Contains(Node.Id))
+			{
+				TSharedRef<FJsonObject> EntryPoint = MakeShared<FJsonObject>();
+				EntryPoint->SetStringField(TEXT("nodeId"), Node.Id);
+				EntryPoint->SetStringField(TEXT("name"), Node.Name);
+				EntryPoint->SetStringField(TEXT("className"), Node.ClassName);
+				EntryPoint->SetStringField(TEXT("jsonPointer"), NodePointer);
+				EntryPoints.Add(MakeShared<FJsonValueObject>(EntryPoint));
+			}
+		}
+
+		Index->SetArrayField(TEXT("entryPoints"), EntryPoints);
+		Index->SetArrayField(TEXT("searchIndex"), SearchIndex);
+		return Index;
+	}
+
 	static TSharedRef<FJsonObject> MakeGraphJson(const FReadAllGraphIR& Graph)
 	{
 		TSharedRef<FJsonObject> Json = MakeShared<FJsonObject>();
@@ -259,6 +328,9 @@ namespace ReadAllDocumentIRImpl
 			Links.Add(MakeShared<FJsonValueObject>(LinkJson));
 		}
 		Json->SetArrayField(TEXT("links"), Links);
+
+		// Emitted last so the index always reflects the arrays actually serialised above.
+		Json->SetObjectField(TEXT("graphIndex"), MakeGraphIndexJson(Graph));
 		return Json;
 	}
 
