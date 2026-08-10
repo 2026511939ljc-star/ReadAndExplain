@@ -494,6 +494,52 @@ FString FReadAllAssetDocumentIR::RenderMetadataJson(const EReadAllExportMode Mod
 	}
 	Root->SetArrayField(TEXT("graphs"), GraphValues);
 
+	// Root-level native index. MCP treats the absence of this object as a signal
+	// that it must rebuild the index itself and raises GRAPH_INDEX_DERIVED; when it
+	// is present the index is a Raw Fact and no derivation warning is needed.
+	// The per-graph "graphIndex" objects above carry the node-level detail; this
+	// object is the asset-level roll-up plus a graph locator table.
+	{
+		TSharedRef<FJsonObject> RootIndex = MakeShared<FJsonObject>();
+		int32 TotalNodes = 0;
+		int32 TotalPins = 0;
+		int32 TotalLinks = 0;
+		TArray<TSharedPtr<FJsonValue>> GraphLocators;
+		GraphLocators.Reserve(Graphs.Num());
+
+		for (int32 GraphIndex = 0; GraphIndex < Graphs.Num(); ++GraphIndex)
+		{
+			const FReadAllGraphIR& Graph = Graphs[GraphIndex];
+			int32 GraphPinCount = 0;
+			for (const FReadAllGraphNodeIR& Node : Graph.Nodes)
+			{
+				GraphPinCount += Node.Pins.Num();
+			}
+			TotalNodes += Graph.Nodes.Num();
+			TotalPins += GraphPinCount;
+			TotalLinks += Graph.Links.Num();
+
+			TSharedRef<FJsonObject> Locator = MakeShared<FJsonObject>();
+			Locator->SetStringField(TEXT("graphId"), Graph.Id);
+			Locator->SetStringField(TEXT("name"), Graph.Name);
+			Locator->SetStringField(TEXT("kind"), Graph.Kind);
+			Locator->SetNumberField(TEXT("nodeCount"), Graph.Nodes.Num());
+			Locator->SetNumberField(TEXT("pinCount"), GraphPinCount);
+			Locator->SetNumberField(TEXT("linkCount"), Graph.Links.Num());
+			Locator->SetStringField(TEXT("jsonPointer"), FString::Printf(TEXT("/graphs/%d"), GraphIndex));
+			GraphLocators.Add(MakeShared<FJsonValueObject>(Locator));
+		}
+
+		RootIndex->SetNumberField(TEXT("indexVersion"), 1);
+		RootIndex->SetStringField(TEXT("source"), TEXT("native"));
+		RootIndex->SetNumberField(TEXT("graphCount"), Graphs.Num());
+		RootIndex->SetNumberField(TEXT("nodeCount"), TotalNodes);
+		RootIndex->SetNumberField(TEXT("pinCount"), TotalPins);
+		RootIndex->SetNumberField(TEXT("linkCount"), TotalLinks);
+		RootIndex->SetArrayField(TEXT("graphs"), GraphLocators);
+		Root->SetObjectField(TEXT("graphIndex"), RootIndex);
+	}
+
 	TArray<TSharedPtr<FJsonValue>> RendererValues;
 	RendererValues.Reserve(NiagaraRenderers.Num());
 	for (const FReadAllNiagaraRendererIR& Renderer : NiagaraRenderers)
