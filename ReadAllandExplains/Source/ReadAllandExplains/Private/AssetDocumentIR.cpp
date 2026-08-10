@@ -129,6 +129,37 @@ namespace ReadAllDocumentIRImpl
 				Out += TEXT("| (无连线) | | |\n");
 			}
 			Out += TEXT("\n");
+
+			// Verbatim authored code, currently Niagara Custom HLSL. Emitted as a
+			// fenced block so the exact text survives review and diffing; it is never
+			// reformatted or summarised.
+			bool bWroteCodeHeading = false;
+			for (const FReadAllGraphNodeIR& Node : Graph.Nodes)
+			{
+				if (Node.SourceCode.IsEmpty()) continue;
+				if (!bWroteCodeHeading)
+				{
+					Out += TEXT("#### 节点内嵌代码\n\n");
+					bWroteCodeHeading = true;
+				}
+				Out += FString::Printf(TEXT("- 节点 `%s`（%s），%d 字符"),
+					*Node.Title,
+					*Node.ClassName,
+					Node.SourceCode.Len());
+				if (!Node.ReferencePath.IsEmpty())
+				{
+					Out += FString::Printf(TEXT("，用途 `%s`"), *Node.ReferencePath);
+				}
+				Out += TEXT("\n\n```");
+				Out += Node.SourceCodeLanguage.IsEmpty() ? TEXT("text") : *Node.SourceCodeLanguage;
+				Out += TEXT("\n");
+				Out += Node.SourceCode;
+				if (!Node.SourceCode.EndsWith(TEXT("\n")))
+				{
+					Out += TEXT("\n");
+				}
+				Out += TEXT("```\n\n");
+			}
 		}
 	}
 
@@ -228,6 +259,16 @@ namespace ReadAllDocumentIRImpl
 			Pins.Add(MakeShared<FJsonValueObject>(MakePinJson(Pin)));
 		}
 		Json->SetArrayField(TEXT("pins"), Pins);
+
+		// Only emitted for nodes that genuinely carry authored code, currently
+		// Niagara Custom HLSL. Absent for every other node type, so its presence is
+		// itself evidence rather than an empty placeholder.
+		if (!Node.SourceCode.IsEmpty())
+		{
+			Json->SetStringField(TEXT("sourceCode"), Node.SourceCode);
+			Json->SetStringField(TEXT("sourceCodeLanguage"), Node.SourceCodeLanguage);
+			Json->SetNumberField(TEXT("sourceCodeCharacterCount"), Node.SourceCode.Len());
+		}
 		return Json;
 	}
 
