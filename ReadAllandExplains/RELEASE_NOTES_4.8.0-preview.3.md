@@ -51,19 +51,43 @@ presence is itself evidence.
 
 ## Verification
 
-Exported `ContextPack_20260811_204550_A311309F` with this build.
+Exported `ContextPack_20260811_204550_A311309F` (single asset) and
+`ContextPack_20260811_210312_55EAC3E3` (84 assets, the full `BP_FluxAllOne`
+dependency closure) with this build.
+
+Full-scale export, 84 assets covering Blueprint, Material, Niagara, Enum, Texture
+and StaticMesh:
+
+- 63 assets carry graphs, and **all 63 carry a native index** with zero
+  disagreement between the index and the graphs it describes. Coverage is not a
+  single sample.
+- `BP_FluxAllOne` resolves 7 graphs and `NS_InfiniteSurfaceMesh` resolves 20
+  graphs totalling 767 nodes, both reported as
+  `graph_index_source=native_metadata_graph_index` with no
+  `GRAPH_INDEX_DERIVED`.
+- Niagara Custom HLSL was captured from a real production asset,
+  `NS_InfiniteSurfaceMesh`, node `Custom Hlsl001`, 166 characters.
+
+Single-asset export used for the first end-to-end proof:
 
 - Native index present with `source: native`, 2 graphs, 6 nodes, 14 pins, 5
   links, and zero disagreement between the index and the graphs it describes.
-- MCP reports `native_metadata_graph_index` and no longer raises
-  `GRAPH_INDEX_DERIVED`, closing the loop from exporter to consumer.
 - 2 Custom HLSL nodes, both carrying a body, 511 and 554 characters, with
   `sourceCodeCharacterCount` matching the actual string length exactly. The text
   survives intact including the `GPU_SIMULATION` guard, the `View.WorldToClip`
   transform and the `ScreenPositionScaleBias.wz` swizzle, so no truncation or
   escaping damage occurred.
-- Native and derived indexes agree across every local pack: 1,536 assets with
+
+Cross-cutting checks:
+
+- Native and derived indexes agree across every local pack: 1,619 assets with
   graphs, 0 order mismatches, 0 count mismatches.
+- Across all 104 local packs, 65 assets carry a native index and 1,554 older
+  assets still resolve through the derived path, confirming that old packs keep
+  working unchanged.
+- Golden Pack regression passes against a live export, asserting `source: native`,
+  `graphIndex`, `sourceCodeLanguage: hlsl`, `GPU_SIMULATION` and
+  `ScreenPositionScaleBias` in the exported metadata.
 - Contract 54 and Golden 22 pass.
 
 ## Compatibility
