@@ -129,6 +129,37 @@ namespace ReadAllDocumentIRImpl
 				Out += TEXT("| (无连线) | | |\n");
 			}
 			Out += TEXT("\n");
+
+			// Verbatim authored code, currently Niagara Custom HLSL. Emitted as a
+			// fenced block so the exact text survives review and diffing; it is never
+			// reformatted or summarised.
+			bool bWroteCodeHeading = false;
+			for (const FReadAllGraphNodeIR& Node : Graph.Nodes)
+			{
+				if (Node.SourceCode.IsEmpty()) continue;
+				if (!bWroteCodeHeading)
+				{
+					Out += TEXT("#### 节点内嵌代码\n\n");
+					bWroteCodeHeading = true;
+				}
+				Out += FString::Printf(TEXT("- 节点 `%s`（%s），%d 字符"),
+					*Node.Title,
+					*Node.ClassName,
+					Node.SourceCode.Len());
+				if (!Node.ReferencePath.IsEmpty())
+				{
+					Out += FString::Printf(TEXT("，用途 `%s`"), *Node.ReferencePath);
+				}
+				Out += TEXT("\n\n```");
+				Out += Node.SourceCodeLanguage.IsEmpty() ? TEXT("text") : *Node.SourceCodeLanguage;
+				Out += TEXT("\n");
+				Out += Node.SourceCode;
+				if (!Node.SourceCode.EndsWith(TEXT("\n")))
+				{
+					Out += TEXT("\n");
+				}
+				Out += TEXT("```\n\n");
+			}
 		}
 	}
 
@@ -228,7 +259,86 @@ namespace ReadAllDocumentIRImpl
 			Pins.Add(MakeShared<FJsonValueObject>(MakePinJson(Pin)));
 		}
 		Json->SetArrayField(TEXT("pins"), Pins);
+
+		// Only emitted for nodes that genuinely carry authored code, currently
+		// Niagara Custom HLSL. Absent for every other node type, so its presence is
+		// itself evidence rather than an empty placeholder.
+		if (!Node.SourceCode.IsEmpty())
+		{
+			Json->SetStringField(TEXT("sourceCode"), Node.SourceCode);
+			Json->SetStringField(TEXT("sourceCodeLanguage"), Node.SourceCodeLanguage);
+			Json->SetNumberField(TEXT("sourceCodeCharacterCount"), Node.SourceCode.Len());
+		}
 		return Json;
+	}
+
+	/**
+	 * Builds the native graphIndex for one graph.
+	 *
+	 * This is a Raw Fact produced by the exporter, not a Derived View rebuilt by a
+	 * consumer. MCP 4.8 derives an equivalent index in memory and flags it with
+	 * GRAPH_INDEX_DERIVED; when this field is present that warning is unnecessary.
+	 *
+	 * Ordering rule: every array preserves the original graph IR order so that a
+	 * native index and a derived index enumerate targets identically. Do not sort.
+	 */
+	static TSharedRef<FJsonObject> MakeGraphIndexJson(const FReadAllGraphIR& Graph)
+	{
+		TSharedRef<FJsonObject> Index = MakeShared<FJsonObject>();
+
+		int32 PinCount = 0;
+		for (const FReadAllGraphNodeIR& Node : Graph.Nodes)
+		{
+			PinCount += Node.Pins.Num();
+		}
+		Index->SetNumberField(TEXT("nodeCount"), Graph.Nodes.Num());
+		Index->SetNumberField(TEXT("pinCount"), PinCount);
+		Index->SetNumberField(TEXT("linkCount"), Graph.Links.Num());
+
+		// A node is an entry point when no link terminates on it. Root and output
+		// nodes therefore surface first without needing a class-name allow-list.
+		TSet<FString> NodesWithIncomingLinks;
+		NodesWithIncomingLinks.Reserve(Graph.Links.Num());
+		for (const FReadAllGraphLinkIR& Link : Graph.Links)
+		{
+			NodesWithIncomingLinks.Add(Link.ToNodeId);
+		}
+
+		TArray<TSharedPtr<FJsonValue>> EntryPoints;
+		TArray<TSharedPtr<FJsonValue>> SearchIndex;
+		SearchIndex.Reserve(Graph.Nodes.Num());
+
+		for (int32 NodeIndex = 0; NodeIndex < Graph.Nodes.Num(); ++NodeIndex)
+		{
+			const FReadAllGraphNodeIR& Node = Graph.Nodes[NodeIndex];
+
+			// json_pointer lets a consumer cite the exact evidence location without
+			// guessing how the array was serialised.
+			const FString NodePointer = FString::Printf(TEXT("/nodes/%d"), NodeIndex);
+
+			TSharedRef<FJsonObject> Entry = MakeShared<FJsonObject>();
+			Entry->SetStringField(TEXT("nodeId"), Node.Id);
+			Entry->SetStringField(TEXT("name"), Node.Name);
+			Entry->SetStringField(TEXT("className"), Node.ClassName);
+			Entry->SetStringField(TEXT("title"), Node.Title);
+			Entry->SetNumberField(TEXT("pinCount"), Node.Pins.Num());
+			Entry->SetStringField(TEXT("jsonPointer"), NodePointer);
+			SearchIndex.Add(MakeShared<FJsonValueObject>(Entry));
+
+			if (!NodesWithIncomingLinks.Contains(Node.Id))
+			{
+				TSharedRef<FJsonObject> EntryPoint = MakeShared<FJsonObject>();
+				EntryPoint->SetStringField(TEXT("nodeId"), Node.Id);
+				EntryPoint->SetStringField(TEXT("name"), Node.Name);
+				EntryPoint->SetStringField(TEXT("className"), Node.ClassName);
+				EntryPoint->SetStringField(TEXT("jsonPointer"), NodePointer);
+				EntryPoints.Add(MakeShared<FJsonValueObject>(EntryPoint));
+			}
+		}
+
+		Index->SetArrayField(TEXT("entryPoints"), EntryPoints);
+		Index->SetArrayField(TEXT("searchIndex"), SearchIndex);
+		return Index;
 	}
 
 	static TSharedRef<FJsonObject> MakeGraphJson(const FReadAllGraphIR& Graph)
@@ -259,6 +369,9 @@ namespace ReadAllDocumentIRImpl
 			Links.Add(MakeShared<FJsonValueObject>(LinkJson));
 		}
 		Json->SetArrayField(TEXT("links"), Links);
+
+		// Emitted last so the index always reflects the arrays actually serialised above.
+		Json->SetObjectField(TEXT("graphIndex"), MakeGraphIndexJson(Graph));
 		return Json;
 	}
 
@@ -421,6 +534,52 @@ FString FReadAllAssetDocumentIR::RenderMetadataJson(const EReadAllExportMode Mod
 		GraphValues.Add(MakeShared<FJsonValueObject>(ReadAllDocumentIRImpl::MakeGraphJson(Graph)));
 	}
 	Root->SetArrayField(TEXT("graphs"), GraphValues);
+
+	// Root-level native index. MCP treats the absence of this object as a signal
+	// that it must rebuild the index itself and raises GRAPH_INDEX_DERIVED; when it
+	// is present the index is a Raw Fact and no derivation warning is needed.
+	// The per-graph "graphIndex" objects above carry the node-level detail; this
+	// object is the asset-level roll-up plus a graph locator table.
+	{
+		TSharedRef<FJsonObject> RootIndex = MakeShared<FJsonObject>();
+		int32 TotalNodes = 0;
+		int32 TotalPins = 0;
+		int32 TotalLinks = 0;
+		TArray<TSharedPtr<FJsonValue>> GraphLocators;
+		GraphLocators.Reserve(Graphs.Num());
+
+		for (int32 GraphIndex = 0; GraphIndex < Graphs.Num(); ++GraphIndex)
+		{
+			const FReadAllGraphIR& Graph = Graphs[GraphIndex];
+			int32 GraphPinCount = 0;
+			for (const FReadAllGraphNodeIR& Node : Graph.Nodes)
+			{
+				GraphPinCount += Node.Pins.Num();
+			}
+			TotalNodes += Graph.Nodes.Num();
+			TotalPins += GraphPinCount;
+			TotalLinks += Graph.Links.Num();
+
+			TSharedRef<FJsonObject> Locator = MakeShared<FJsonObject>();
+			Locator->SetStringField(TEXT("graphId"), Graph.Id);
+			Locator->SetStringField(TEXT("name"), Graph.Name);
+			Locator->SetStringField(TEXT("kind"), Graph.Kind);
+			Locator->SetNumberField(TEXT("nodeCount"), Graph.Nodes.Num());
+			Locator->SetNumberField(TEXT("pinCount"), GraphPinCount);
+			Locator->SetNumberField(TEXT("linkCount"), Graph.Links.Num());
+			Locator->SetStringField(TEXT("jsonPointer"), FString::Printf(TEXT("/graphs/%d"), GraphIndex));
+			GraphLocators.Add(MakeShared<FJsonValueObject>(Locator));
+		}
+
+		RootIndex->SetNumberField(TEXT("indexVersion"), 1);
+		RootIndex->SetStringField(TEXT("source"), TEXT("native"));
+		RootIndex->SetNumberField(TEXT("graphCount"), Graphs.Num());
+		RootIndex->SetNumberField(TEXT("nodeCount"), TotalNodes);
+		RootIndex->SetNumberField(TEXT("pinCount"), TotalPins);
+		RootIndex->SetNumberField(TEXT("linkCount"), TotalLinks);
+		RootIndex->SetArrayField(TEXT("graphs"), GraphLocators);
+		Root->SetObjectField(TEXT("graphIndex"), RootIndex);
+	}
 
 	TArray<TSharedPtr<FJsonValue>> RendererValues;
 	RendererValues.Reserve(NiagaraRenderers.Num());

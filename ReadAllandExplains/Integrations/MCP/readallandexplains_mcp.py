@@ -4,6 +4,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import stat
 import sys
 import uuid
@@ -12,7 +13,7 @@ from pathlib import Path
 from typing import Any
 
 SERVER_NAME = "readallandexplains"
-SERVER_VERSION = "0.5.0"
+SERVER_VERSION = "0.7.0"
 CONTRACT_VERSION = "rae.mcp/1.0"
 SUPPORTED_PROTOCOL_VERSIONS = ("2024-11-05", "2025-03-26", "2025-06-18", "2025-11-25")
 DEFAULT_PROTOCOL_VERSION = SUPPORTED_PROTOCOL_VERSIONS[-1]
@@ -420,6 +421,35 @@ class ContextPackStore:
             warnings,
         )
 
+    def _complete_pack_choices(self, limit: int = 10) -> list[dict[str, Any]]:
+        if not self.packs_root.exists():
+            return []
+        candidates = [
+            path
+            for path in self.packs_root.iterdir()
+            if path.is_dir() and not path.name.casefold().endswith(".tmp") and (path / "context-pack.json").is_file()
+        ]
+        candidates.sort(key=lambda path: path.stat().st_mtime_ns, reverse=True)
+        choices: list[dict[str, Any]] = []
+        for path in candidates:
+            if len(choices) >= limit:
+                break
+            try:
+                info, _ = self.pack_info(path, validate=True)
+            except (OSError, RaeError):
+                continue
+            if info.get("state") not in {"complete", "legacy"}:
+                continue
+            choices.append(
+                {
+                    "pack_id": info["pack_id"],
+                    "state": info["state"],
+                    "fingerprint": info["fingerprint"],
+                    "created_at": info.get("created_at", ""),
+                }
+            )
+        return choices
+
     def list_packs(self, offset: int = 0, limit: int = 20) -> dict[str, Any]:
         if not self.packs_root.exists():
             return {"pack": None, "data": {"packs": []}, "page": page_info(offset, limit, 0, 0)}
@@ -654,7 +684,16 @@ class ContextPackStore:
         record = candidates[0]
         return pack, record, record.get("_metadata", {})
 
-    def evidence(self, pack: Path, path: Path, pointer: str = "", asset_path: str = "", item_id: str = "", line: int | None = None) -> dict[str, Any]:
+    def evidence(
+        self,
+        pack: Path,
+        path: Path,
+        pointer: str = "",
+        asset_path: str = "",
+        item_id: str = "",
+        line: int | None = None,
+        **locations: Any,
+    ) -> dict[str, Any]:
         value: dict[str, Any] = {"source_file": self._relative(pack, path), "json_pointer": pointer}
         if asset_path:
             value["asset_path"] = asset_path
@@ -662,7 +701,899 @@ class ContextPackStore:
             value["item_id"] = item_id
         if line is not None:
             value["line"] = line
+        for key, location in locations.items():
+            if location is not None and location != "":
+                value[key] = location
         return value
+
+    @staticmethod
+    def _validated_graphs(metadata: dict[str, Any]) -> list[dict[str, Any]]:
+        if "graphs" not in metadata:
+            raise RaeError("GRAPH_INDEX_UNAVAILABLE", "Asset metadata does not contain graphs.")
+        graphs = metadata["graphs"]
+        if not isinstance(graphs, list):
+            raise RaeError("GRAPH_DATA_INVALID", "metadata.graphs must be an array.")
+        for graph_index, graph in enumerate(graphs):
+            if not isinstance(graph, dict):
+                raise RaeError("GRAPH_DATA_INVALID", "Every graph must be an object.", {"json_pointer": f"/graphs/{graph_index}"})
+            graph_id = graph.get("id")
+            if not isinstance(graph_id, str) or not graph_id:
+                raise RaeError("GRAPH_DATA_INVALID", "Every graph must have a non-empty string id.", {"json_pointer": f"/graphs/{graph_index}/id"})
+            nodes = graph.get("nodes")
+            links = graph.get("links")
+            if not isinstance(nodes, list) or not isinstance(links, list):
+                raise RaeError("GRAPH_DATA_INVALID", "Every graph must contain node and link arrays.", {"graph_id": graph_id})
+            for node_index, node in enumerate(nodes):
+                pointer = f"/graphs/{graph_index}/nodes/{node_index}"
+                if not isinstance(node, dict):
+                    raise RaeError("GRAPH_DATA_INVALID", "Every graph node must be an object.", {"json_pointer": pointer})
+                node_id = node.get("id")
+                if not isinstance(node_id, str) or not node_id:
+                    raise RaeError("GRAPH_DATA_INVALID", "Every graph node must have a non-empty string id.", {"json_pointer": pointer + "/id"})
+                pins = node.get("pins", [])
+                if not isinstance(pins, list):
+                    raise RaeError("GRAPH_DATA_INVALID", "Node pins must be an array.", {"json_pointer": pointer + "/pins"})
+                for pin_index, pin in enumerate(pins):
+                    pin_pointer = f"{pointer}/pins/{pin_index}"
+                    if not isinstance(pin, dict):
+                        raise RaeError("GRAPH_DATA_INVALID", "Every pin must be an object.", {"json_pointer": pin_pointer})
+                    pin_id = pin.get("id")
+                    if not isinstance(pin_id, str) or not pin_id:
+                        raise RaeError("GRAPH_DATA_INVALID", "Every pin must have a non-empty string id.", {"json_pointer": pin_pointer + "/id"})
+            for link_index, link in enumerate(links):
+                if not isinstance(link, dict):
+                    raise RaeError("GRAPH_DATA_INVALID", "Every graph link must be an object.", {"json_pointer": f"/graphs/{graph_index}/links/{link_index}"})
+        return graphs
+
+    @staticmethod
+    def _native_graph_index(metadata: dict[str, Any], graphs: list[dict[str, Any]]) -> dict[str, Any] | None:
+        """Returns the root graphIndex only when it provably matches the exported graphs.
+
+        CP7 makes the UE exporter emit graphIndex as a Raw Fact. Presence alone is
+        not enough to trust it: a stale or hand-edited index that disagrees with
+        metadata.graphs would silently corrupt every answer built on top of it.
+        A mismatch is therefore treated as "no native index" and the caller falls
+        back to deriving one, which is always reproducible from the graphs array.
+        """
+        index = metadata.get("graphIndex")
+        if not isinstance(index, dict):
+            return None
+        if index.get("source") != "native":
+            return None
+
+        locators = index.get("graphs")
+        if not isinstance(locators, list) or len(locators) != len(graphs):
+            return None
+
+        for locator, graph in zip(locators, graphs):
+            if not isinstance(locator, dict):
+                return None
+            if locator.get("graphId") != graph.get("id"):
+                return None
+            nodes = graph["nodes"]
+            expected = (
+                len(nodes),
+                sum(len(node.get("pins") or []) for node in nodes),
+                len(graph["links"]),
+            )
+            actual = (locator.get("nodeCount"), locator.get("pinCount"), locator.get("linkCount"))
+            if expected != actual:
+                return None
+        return index
+
+    @staticmethod
+    def _graph_warnings(metadata: dict[str, Any], graphs: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        warnings: list[dict[str, Any]] = []
+        if ContextPackStore._native_graph_index(metadata, graphs) is None:
+            warnings.append({"code": "GRAPH_INDEX_DERIVED", "message": "Graph index was derived from metadata.graphs."})
+        duplicate_graph_ids = 0
+        duplicate_node_ids = 0
+        duplicate_node_pin_ids = 0
+        unknown_node_endpoints = 0
+        unknown_pin_endpoints = 0
+        graph_id_counts: dict[str, int] = {}
+        for graph in graphs:
+            graph_marker = str(graph["id"]).casefold()
+            graph_id_counts[graph_marker] = graph_id_counts.get(graph_marker, 0) + 1
+            node_id_counts: dict[str, int] = {}
+            node_pin_sets: dict[str, list[set[str]]] = {}
+            for node in graph["nodes"]:
+                node_marker = str(node["id"]).casefold()
+                node_id_counts[node_marker] = node_id_counts.get(node_marker, 0) + 1
+                pin_ids: set[str] = set()
+                for pin in node.get("pins", []):
+                    pin_marker = str(pin["id"]).casefold()
+                    if pin_marker in pin_ids:
+                        duplicate_node_pin_ids += 1
+                    pin_ids.add(pin_marker)
+                node_pin_sets.setdefault(node_marker, []).append(pin_ids)
+            duplicate_node_ids += sum(count - 1 for count in node_id_counts.values() if count > 1)
+            for link in graph["links"]:
+                for node_field, pin_field in (("fromNodeId", "fromPinId"), ("toNodeId", "toPinId")):
+                    node_marker = str(link.get(node_field, "")).casefold()
+                    pin_marker = str(link.get(pin_field, "")).casefold()
+                    owners = node_pin_sets.get(node_marker)
+                    if not owners:
+                        unknown_node_endpoints += 1
+                    elif not any(pin_marker in pins for pins in owners):
+                        unknown_pin_endpoints += 1
+        duplicate_graph_ids = sum(count - 1 for count in graph_id_counts.values() if count > 1)
+        if duplicate_graph_ids or duplicate_node_ids or duplicate_node_pin_ids:
+            warnings.append(
+                {
+                    "code": "GRAPH_IDENTITY_DEGRADED",
+                    "message": "Some legacy Graph ids are not unique enough for unambiguous topology traversal.",
+                    "details": {
+                        "duplicate_graph_ids": duplicate_graph_ids,
+                        "duplicate_node_ids": duplicate_node_ids,
+                        "duplicate_pin_ids_within_node": duplicate_node_pin_ids,
+                    },
+                }
+            )
+        if unknown_node_endpoints or unknown_pin_endpoints:
+            warnings.append(
+                {
+                    "code": "GRAPH_LINKS_INCOMPLETE",
+                    "message": "Some legacy Links cannot be fully resolved to exported Node/Pin facts.",
+                    "details": {
+                        "unknown_node_endpoints": unknown_node_endpoints,
+                        "unknown_pin_endpoints": unknown_pin_endpoints,
+                    },
+                }
+            )
+        return warnings
+
+    def _graph_context(
+        self, asset: str, pack_path: str | None
+    ) -> tuple[Path, dict[str, Any], dict[str, Any], dict[str, Any], Path, list[dict[str, Any]]]:
+        pack, record, metadata = self.find_asset(asset, pack_path)
+        graphs = self._validated_graphs(metadata)
+        descriptor = self.asset_descriptor(record, metadata)
+        metadata_path = Path(record["_metadata_path"]) if record.get("_metadata_path") else pack / "index.json"
+        return pack, record, metadata, descriptor, metadata_path, graphs
+
+    @staticmethod
+    def _semantic_section_id(title: str) -> str | None:
+        normalized = re.sub(r"\s+", " ", title.casefold()).strip()
+        groups = (
+            ("ai-prompt", ("ai prompt", "suggested prompt", "prompt for ai", "提示词", "提示语")),
+            ("overview", ("overview", "summary", "一眼看懂", "概览", "概述", "资产身份", "资产摘要")),
+            ("parameters", ("parameter", "configuration", "settings", "参数", "配置")),
+            ("relationships", ("relationship", "dependenc", "referenc", "关联", "依赖", "引用", "追踪候选")),
+            ("niagara-details", ("niagara", "renderer", "simulation stage", "module stack", "script version", "emitter", "handle ", "渲染器", "模拟阶段", "模块栈")),
+            ("graph-ir", ("graph", "node", "expression", "hlsl", "节点", "图结构", "结构化图", "表达式")),
+            ("technical", ("technical", "diagnostic", "coverage", "texture", "sampler", "render pass", "availability", "complete table", "geometry", "unknown", "技术", "诊断", "覆盖", "纹理", "采样", "可用性")),
+        )
+        for section_id, markers in groups:
+            if any(marker in normalized for marker in markers):
+                return section_id
+        return None
+
+    @staticmethod
+    def _section_summary(text: str) -> str:
+        lines = text.splitlines()
+        for line in lines[1:]:
+            value = line.strip()
+            if not value or value.startswith("<!--") or value.startswith("```") or value.startswith("~~~"):
+                continue
+            value = re.sub(r"^[>\-*+\d.\s]+", "", value)
+            value = re.sub(r"[`*_]", "", value).strip()
+            if value:
+                return value[:200]
+        return ""
+
+    @classmethod
+    def _readable_sections(cls, text: str) -> list[dict[str, Any]]:
+        lines = text.splitlines(keepends=True)
+        headings: list[tuple[int, int, str]] = []
+        character = 0
+        fence_character = ""
+        fence_length = 0
+        for line_index, line in enumerate(lines):
+            plain = line.rstrip("\r\n")
+            fence = re.match(r"^ {0,3}(`{3,}|~{3,})(.*)$", plain)
+            if fence_character:
+                if fence and fence.group(1)[0] == fence_character and len(fence.group(1)) >= fence_length and not fence.group(2).strip():
+                    fence_character = ""
+                    fence_length = 0
+                character += len(line)
+                continue
+            if fence:
+                fence_character = fence.group(1)[0]
+                fence_length = len(fence.group(1))
+                character += len(line)
+                continue
+            heading = re.match(r"^ {0,3}##[ \t]+(.+?)[ \t]*#*[ \t]*$", plain)
+            if heading:
+                title = heading.group(1).strip()
+                if title:
+                    headings.append((line_index, character, title))
+            character += len(line)
+        if not headings:
+            return [
+                {
+                    "section_id": "document",
+                    "title": "Document",
+                    "summary": cls._section_summary("\n" + text),
+                    "line_start": 1,
+                    "line_end": max(1, len(lines)),
+                    "character_start": 0,
+                    "character_end": len(text),
+                    "character_count": len(text),
+                }
+            ]
+        outer_headings: list[tuple[int, int, str]] = []
+        inside_technical = False
+        for heading in headings:
+            semantic = cls._semantic_section_id(heading[2])
+            if inside_technical:
+                if semantic == "ai-prompt":
+                    outer_headings.append(heading)
+                    inside_technical = False
+                continue
+            outer_headings.append(heading)
+            if semantic == "technical":
+                inside_technical = True
+        headings = outer_headings
+        sections: list[dict[str, Any]] = []
+        semantic_counts: dict[str, int] = {}
+        unknown_count = 0
+        for index, (line_index, start, title) in enumerate(headings):
+            end = headings[index + 1][1] if index + 1 < len(headings) else len(text)
+            line_end = headings[index + 1][0] if index + 1 < len(headings) else max(line_index + 1, len(lines))
+            semantic = cls._semantic_section_id(title)
+            if semantic is None:
+                unknown_count += 1
+                section_id = f"section-{unknown_count}"
+            else:
+                semantic_counts[semantic] = semantic_counts.get(semantic, 0) + 1
+                occurrence = semantic_counts[semantic]
+                section_id = semantic if occurrence == 1 else f"{semantic}-{occurrence}"
+            section_text = text[start:end]
+            sections.append(
+                {
+                    "section_id": section_id,
+                    "title": title,
+                    "summary": cls._section_summary(section_text),
+                    "line_start": line_index + 1,
+                    "line_end": line_end,
+                    "character_start": start,
+                    "character_end": end,
+                    "character_count": end - start,
+                }
+            )
+        return sections
+
+    def _readable_context(
+        self, asset: str, pack_path: str | None
+    ) -> tuple[Path, dict[str, Any], dict[str, Any], dict[str, Any], Path, str, list[dict[str, Any]]]:
+        pack, record, metadata = self.find_asset(asset, pack_path)
+        readable_path = record.get("_readable_path")
+        if not readable_path:
+            raise RaeError("READABLE_NOT_FOUND", f"Readable document not found for {asset}", {"asset": asset})
+        path = Path(str(readable_path))
+        text = load_text(path)
+        return pack, record, metadata, self.asset_descriptor(record, metadata), path, text, self._readable_sections(text)
+
+    def asset_outline(self, asset: str, pack_path: str | None = None) -> dict[str, Any]:
+        pack, record, metadata = self.find_asset(asset, pack_path)
+        descriptor = self.asset_descriptor(record, metadata)
+        coverage = self.dependency_coverage(pack, record, metadata)
+        warnings: list[dict[str, str]] = []
+        missing_fields: list[str] = []
+        metadata_path = Path(record["_metadata_path"]) if record.get("_metadata_path") else pack / "index.json"
+        evidence = [self.evidence(pack, metadata_path, "/graphs" if "graphs" in metadata else "", descriptor["object_path"])]
+        graph_source = "derived_metadata_graphs"
+        try:
+            graphs = self._validated_graphs(metadata)
+            if self._native_graph_index(metadata, graphs) is not None:
+                graph_source = "native_metadata_graph_index"
+            warnings.extend(self._graph_warnings(metadata, graphs))
+            compact_graphs = []
+            for graph_index, graph in enumerate(graphs):
+                nodes = graph["nodes"]
+                compact_graphs.append(
+                    {
+                        "graph_id": graph["id"],
+                        "name": graph.get("name", ""),
+                        "kind": graph.get("kind", ""),
+                        "node_count": len(nodes),
+                        "pin_count": sum(len(node.get("pins", [])) for node in nodes),
+                        "edge_count": len(graph["links"]),
+                        "json_pointer": f"/graphs/{graph_index}",
+                    }
+                )
+        except RaeError as exc:
+            if exc.code != "GRAPH_INDEX_UNAVAILABLE":
+                raise
+            compact_graphs = []
+            graph_source = "unavailable"
+            missing_fields.append("graphs")
+            warnings.append({"code": exc.code, "message": exc.message})
+        readable_source = "derived_markdown"
+        readable_sections: list[dict[str, Any]] = []
+        readable_path = record.get("_readable_path")
+        if readable_path:
+            path = Path(str(readable_path))
+            text = load_text(path)
+            readable_sections = self._readable_sections(text)
+            warnings.append({"code": "READABLE_INDEX_DERIVED", "message": "Readable section index was derived from Markdown headings."})
+            evidence.append(self.evidence(pack, path, "", descriptor["object_path"]))
+        else:
+            readable_source = "unavailable"
+            missing_fields.append("readable")
+            warnings.append({"code": "READABLE_NOT_FOUND", "message": "Readable document is unavailable."})
+        coverage_summary = {
+            key: coverage[key]
+            for key in (
+                "metadata_available",
+                "readable_available",
+                "dependency_total",
+                "exported_dependency_count",
+                "missing_project_dependency_count",
+                "external_dependency_count",
+            )
+        }
+        return {
+            "pack": pack,
+            "asset": descriptor,
+            "data": {
+                "graphs": compact_graphs,
+                "readable_sections": readable_sections,
+                "coverage": coverage_summary,
+                "graph_index_source": graph_source,
+                "readable_index_source": readable_source,
+            },
+            "evidence": evidence,
+            "warnings": warnings,
+            "missing_fields": missing_fields,
+        }
+
+    def readable_sections(self, asset: str, pack_path: str | None, offset: int, limit: int) -> dict[str, Any]:
+        pack, _, _, descriptor, path, _, sections = self._readable_context(asset, pack_path)
+        selected, page = paginate(sections, offset, limit, 100)
+        evidence = [
+            self.evidence(
+                pack,
+                path,
+                "",
+                descriptor["object_path"],
+                section_id=section["section_id"],
+                line_start=section["line_start"],
+                line_end=section["line_end"],
+                character_start=section["character_start"],
+                character_end=section["character_end"],
+            )
+            for section in selected
+        ]
+        return {
+            "pack": pack,
+            "asset": descriptor,
+            "data": {"sections": selected, "readable_index_source": "derived_markdown"},
+            "evidence": evidence,
+            "page": page,
+            "warnings": [{"code": "READABLE_INDEX_DERIVED", "message": "Readable section index was derived from Markdown headings."}],
+        }
+
+    def readable_section(
+        self, asset: str, section_id: str, pack_path: str | None, offset: int, limit: int
+    ) -> dict[str, Any]:
+        pack, _, _, descriptor, path, text, sections = self._readable_context(asset, pack_path)
+        matches = [section for section in sections if section["section_id"] == section_id]
+        if not matches:
+            raise RaeError(
+                "READABLE_SECTION_NOT_FOUND",
+                f"Readable section not found: {section_id}",
+                {"asset": asset, "section_id": section_id, "available_sections": [section["section_id"] for section in sections]},
+            )
+        section = matches[0]
+        section_text = text[section["character_start"] : section["character_end"]]
+        start = max(0, offset)
+        size = max(1, min(limit, MAX_OUTPUT_CHARS // 2))
+        selected_text = section_text[start : start + size]
+        page = page_info(start, size, len(selected_text), len(section_text))
+        relative_start = min(start, len(section_text))
+        absolute_start = section["character_start"] + relative_start
+        absolute_end = absolute_start + len(selected_text)
+        line_start = text.count("\n", 0, absolute_start) + 1
+        line_end = text.count("\n", 0, max(absolute_start, absolute_end - 1)) + 1
+        evidence = self.evidence(
+            pack,
+            path,
+            "",
+            descriptor["object_path"],
+            section_id=section_id,
+            line_start=line_start,
+            line_end=line_end,
+            character_start=absolute_start,
+            character_end=absolute_end,
+        )
+        return {
+            "pack": pack,
+            "asset": descriptor,
+            "data": {
+                "section_id": section_id,
+                "title": section["title"],
+                "text": selected_text,
+                "section": section,
+                "readable_index_source": "derived_markdown",
+            },
+            "evidence": [evidence],
+            "page": page,
+            "warnings": [{"code": "READABLE_INDEX_DERIVED", "message": "Readable section index was derived from Markdown headings."}],
+        }
+
+    @staticmethod
+    def _match_rank(query: str, values: list[tuple[str, Any]]) -> tuple[int, str, str] | None:
+        needle = query.casefold()
+        for field, raw in values:
+            value = str(raw) if raw is not None else ""
+            if field == "id" and value.casefold() == needle:
+                return 0, field, value
+        for field, raw in values:
+            value = str(raw) if raw is not None else ""
+            if value and value.casefold() == needle:
+                return 1, field, value
+        for field, raw in values:
+            value = str(raw) if raw is not None else ""
+            if value and value.casefold().startswith(needle):
+                return 2, field, value
+        for field, raw in values:
+            value = str(raw) if raw is not None else ""
+            if value and needle in value.casefold():
+                return 3, field, value
+        return None
+
+    def _resolve_graph(self, graphs: list[dict[str, Any]], graph_id: str) -> tuple[dict[str, Any], int]:
+        matches = [(index, graph) for index, graph in enumerate(graphs) if graph["id"].casefold() == graph_id.casefold()]
+        if not matches:
+            raise RaeError("GRAPH_NOT_FOUND", f"Graph not found: {graph_id}", {"graph_id": graph_id})
+        if len(matches) != 1:
+            raise RaeError("GRAPH_DATA_INVALID", "Graph id is not unique.", {"graph_id": graph_id})
+        return matches[0][1], matches[0][0]
+
+    def locate_graph_target(
+        self,
+        asset: str,
+        query: str | None,
+        graph_id: str | None,
+        target_kind: str,
+        pack_path: str | None,
+        offset: int,
+        limit: int,
+        kind_filter: str | None = None,
+    ) -> dict[str, Any]:
+        pack, _, metadata, descriptor, metadata_path, graphs = self._graph_context(asset, pack_path)
+        normalized_query = "" if query is None else str(query).strip()
+        list_mode = not normalized_query
+        kind_needle = "" if kind_filter is None else str(kind_filter).strip().casefold()
+        indexed_graphs = list(enumerate(graphs))
+        if graph_id:
+            graph, graph_index = self._resolve_graph(graphs, graph_id)
+            indexed_graphs = [(graph_index, graph)]
+        matches: list[tuple[tuple[Any, ...], dict[str, Any], dict[str, Any]]] = []
+        for graph_index, graph in indexed_graphs:
+            graph_pointer = f"/graphs/{graph_index}"
+            if target_kind == "any":
+                rank = (0, "id", str(graph.get("id", ""))) if list_mode else self._match_rank(query, [("id", graph.get("id")), ("name", graph.get("name")), ("kind", graph.get("kind"))])
+                if rank and self._kind_allows(kind_needle, graph.get("kind"), graph.get("className")):
+                    evidence = self.evidence(pack, metadata_path, graph_pointer, descriptor["object_path"], graph_id=graph["id"])
+                    candidate = {
+                        "target_kind": "graph",
+                        "target_id": graph["id"],
+                        "graph_id": graph["id"],
+                        "name": graph.get("name", ""),
+                        "kind": graph.get("kind", ""),
+                        "match_type": "listed" if list_mode else ("exact_id", "exact_text", "prefix", "substring")[rank[0]],
+                        "matched_field": rank[1],
+                        "matched_text": rank[2],
+                        "json_pointer": graph_pointer,
+                        "evidence": evidence,
+                    }
+                    matches.append(((rank[0], graph_index, 0, -1, -1, graph["id"].casefold()), candidate, evidence))
+            for node_index, node in enumerate(graph["nodes"]):
+                node_pointer = f"{graph_pointer}/nodes/{node_index}"
+                if target_kind in {"any", "node"}:
+                    rank = (
+                        (0, "id", str(node.get("id", "")))
+                        if list_mode
+                        else self._match_rank(
+                            query,
+                            [(field, node.get(field)) for field in ("id", "name", "kind", "className", "title", "comment", "referencePath", "calleeGraphId", "direction", "type", "defaultValue")],
+                        )
+                    )
+                    if rank and self._kind_allows(kind_needle, node.get("kind"), node.get("className")):
+                        evidence = self.evidence(pack, metadata_path, node_pointer, descriptor["object_path"], graph_id=graph["id"], node_id=node["id"])
+                        candidate = {
+                            "target_kind": "node",
+                            "target_id": node["id"],
+                            "graph_id": graph["id"],
+                            "node_id": node["id"],
+                            "name": node.get("name", ""),
+                            "kind": node.get("kind", node.get("className", "")),
+                            "title": node.get("title", ""),
+                            "match_type": "listed" if list_mode else ("exact_id", "exact_text", "prefix", "substring")[rank[0]],
+                            "matched_field": rank[1],
+                            "matched_text": rank[2],
+                            "json_pointer": node_pointer,
+                            "evidence": evidence,
+                        }
+                        matches.append(((rank[0], graph_index, 1, node_index, -1, node["id"].casefold()), candidate, evidence))
+                for pin_index, pin in enumerate(node.get("pins", [])):
+                    if target_kind not in {"any", "pin"}:
+                        continue
+                    rank = (
+                        (0, "id", str(pin.get("id", "")))
+                        if list_mode
+                        else self._match_rank(
+                            query,
+                            [(field, pin.get(field)) for field in ("id", "name", "kind", "className", "title", "comment", "referencePath", "calleeGraphId", "direction", "type", "defaultValue")],
+                        )
+                    )
+                    if rank and self._kind_allows(kind_needle, pin.get("kind"), pin.get("className")):
+                        pin_pointer = f"{node_pointer}/pins/{pin_index}"
+                        evidence = self.evidence(
+                            pack,
+                            metadata_path,
+                            pin_pointer,
+                            descriptor["object_path"],
+                            graph_id=graph["id"],
+                            node_id=node["id"],
+                            pin_id=pin["id"],
+                        )
+                        candidate = {
+                            "target_kind": "pin",
+                            "target_id": pin["id"],
+                            "graph_id": graph["id"],
+                            "node_id": node["id"],
+                            "pin_id": pin["id"],
+                            "name": pin.get("name", ""),
+                            "direction": pin.get("direction", ""),
+                            "type": pin.get("type", ""),
+                            "default_value": pin.get("defaultValue", ""),
+                            "match_type": "listed" if list_mode else ("exact_id", "exact_text", "prefix", "substring")[rank[0]],
+                            "matched_field": rank[1],
+                            "matched_text": rank[2],
+                            "json_pointer": pin_pointer,
+                            "evidence": evidence,
+                        }
+                        matches.append(((rank[0], graph_index, 2, node_index, pin_index, pin["id"].casefold()), candidate, evidence))
+        if list_mode:
+            matches.sort(key=lambda item: (item[0][1], item[0][2], item[0][3], item[0][4]))
+        else:
+            matches.sort(key=lambda item: item[0])
+        candidates = [item[1] for item in matches]
+        selected, page = paginate(candidates, offset, limit, 100)
+        selected_evidence = [item[2] for item in matches[offset : offset + len(selected)]]
+        if list_mode:
+            resolution = "listed"
+        else:
+            resolution = "not_found" if not candidates else "unique" if len(candidates) == 1 else "ambiguous"
+        data = {
+            "query": normalized_query,
+            "target_kind": target_kind,
+            "list_mode": list_mode,
+            "resolution": resolution,
+            "candidates": selected,
+            "graph_index_source": "derived_metadata_graphs",
+        }
+        if kind_needle:
+            data["kind_filter"] = str(kind_filter).strip()
+        warnings = self._graph_warnings(metadata, graphs)
+        if resolution == "not_found":
+            available = self._node_name_samples(indexed_graphs)
+            data["available_samples"] = available
+            data["discovery_hint"] = "No target matched this query. Omit query to enumerate this Graph, or retry using one of available_samples. A miss does not prove the node, Graph or asset is absent."
+            warnings.append(
+                {
+                    "code": "TARGET_NOT_FOUND_SAMPLES_PROVIDED",
+                    "message": f"No candidate matched. Returned {len(available)} existing node samples so the Graph can still be explored without reading it in full.",
+                }
+            )
+        return {
+            "pack": pack,
+            "asset": descriptor,
+            "data": data,
+            "evidence": selected_evidence,
+            "page": page,
+            "warnings": warnings,
+        }
+
+    @staticmethod
+    def _kind_allows(kind_needle: str, *values: Any) -> bool:
+        if not kind_needle:
+            return True
+        for value in values:
+            if isinstance(value, str) and value.strip().casefold() == kind_needle:
+                return True
+        return False
+
+    @staticmethod
+    def _node_name_samples(indexed_graphs: list[tuple[int, dict[str, Any]]], limit: int = 10) -> list[dict[str, Any]]:
+        samples: list[dict[str, Any]] = []
+        for graph_index, graph in indexed_graphs:
+            for node_index, node in enumerate(graph.get("nodes", [])):
+                if len(samples) >= limit:
+                    return samples
+                samples.append(
+                    {
+                        "graph_id": graph.get("id", ""),
+                        "node_id": node.get("id", ""),
+                        "name": node.get("name", ""),
+                        "title": node.get("title", ""),
+                        "kind": node.get("kind", node.get("className", "")),
+                        "json_pointer": f"/graphs/{graph_index}/nodes/{node_index}",
+                    }
+                )
+        return samples
+
+    @staticmethod
+    def _compact_pin(pin: dict[str, Any], pointer: str) -> dict[str, Any]:
+        return {
+            "pin_id": pin["id"],
+            "name": pin.get("name", ""),
+            "direction": pin.get("direction", ""),
+            "type": pin.get("type", ""),
+            "default_value": pin.get("defaultValue", ""),
+            "json_pointer": pointer,
+        }
+
+    @classmethod
+    def _compact_node(cls, node: dict[str, Any], graph_index: int, node_index: int) -> dict[str, Any]:
+        pointer = f"/graphs/{graph_index}/nodes/{node_index}"
+        value = {
+            "node_id": node["id"],
+            "name": node.get("name", ""),
+            "kind": node.get("kind", ""),
+            "class_name": node.get("className", ""),
+            "title": node.get("title", ""),
+            "comment": node.get("comment", ""),
+            "reference_path": node.get("referencePath", ""),
+            "callee_graph_id": node.get("calleeGraphId", ""),
+            "json_pointer": pointer,
+            "pins": [cls._compact_pin(pin, f"{pointer}/pins/{pin_index}") for pin_index, pin in enumerate(node.get("pins", []))],
+        }
+        return {key: item for key, item in value.items() if item not in ("", [], None)}
+
+    @staticmethod
+    def _compact_link(link: dict[str, Any], pointer: str) -> dict[str, Any]:
+        return {
+            "from_node_id": link.get("fromNodeId", ""),
+            "from_pin_id": link.get("fromPinId", ""),
+            "to_node_id": link.get("toNodeId", ""),
+            "to_pin_id": link.get("toPinId", ""),
+            "kind": link.get("kind", ""),
+            "json_pointer": pointer,
+        }
+
+    def graph_subgraph(
+        self,
+        asset: str,
+        graph_id: str,
+        target_id: str,
+        direction: str,
+        max_hops: int,
+        max_nodes: int,
+        max_characters: int,
+        pack_path: str | None,
+    ) -> dict[str, Any]:
+        pack, _, metadata, descriptor, metadata_path, graphs = self._graph_context(asset, pack_path)
+        graph, graph_index = self._resolve_graph(graphs, graph_id)
+        nodes = graph["nodes"]
+        node_id_counts: dict[str, int] = {}
+        for node in nodes:
+            marker = node["id"].casefold()
+            node_id_counts[marker] = node_id_counts.get(marker, 0) + 1
+        duplicate_node_ids = [node["id"] for node in nodes if node_id_counts[node["id"].casefold()] > 1]
+        known_node_ids = set(node_id_counts)
+        unknown_node_endpoints = [
+            link.get(field, "")
+            for link in graph["links"]
+            for field in ("fromNodeId", "toNodeId")
+            if str(link.get(field, "")).casefold() not in known_node_ids
+        ]
+        if duplicate_node_ids or unknown_node_endpoints:
+            raise RaeError(
+                "GRAPH_DATA_INVALID",
+                "Graph topology cannot be traversed unambiguously from this legacy snapshot.",
+                {
+                    "graph_id": graph_id,
+                    "duplicate_node_ids": sorted(set(duplicate_node_ids))[:20],
+                    "unknown_node_endpoints": sorted(set(str(value) for value in unknown_node_endpoints))[:20],
+                },
+            )
+        node_by_id = {node["id"].casefold(): (index, node) for index, node in enumerate(nodes)}
+        target_matches: list[tuple[str, int, int | None, dict[str, Any]]] = []
+        needle = target_id.casefold()
+        for node_index, node in enumerate(nodes):
+            if node["id"].casefold() == needle:
+                target_matches.append(("node", node_index, None, node))
+            for pin_index, pin in enumerate(node.get("pins", [])):
+                if pin["id"].casefold() == needle:
+                    target_matches.append(("pin", node_index, pin_index, pin))
+        if not target_matches:
+            raise RaeError("GRAPH_TARGET_NOT_FOUND", f"Graph target not found: {target_id}", {"graph_id": graph_id, "target_id": target_id})
+        if len(target_matches) != 1:
+            raise RaeError("GRAPH_DATA_INVALID", "Graph target id is not unique.", {"graph_id": graph_id, "target_id": target_id})
+        target_kind, target_node_index, target_pin_index, target_value = target_matches[0]
+        target_node = nodes[target_node_index]
+        target_node_id = target_node["id"]
+
+        node_order = {node["id"].casefold(): index for index, node in enumerate(nodes)}
+        neighbors: dict[str, set[str]] = {node["id"].casefold(): set() for node in nodes}
+        for link in graph["links"]:
+            source = link["fromNodeId"].casefold()
+            destination = link["toNodeId"].casefold()
+            if direction in {"downstream", "both"}:
+                neighbors[source].add(destination)
+            if direction in {"upstream", "both"}:
+                neighbors[destination].add(source)
+        for values in neighbors.values():
+            values.intersection_update(node_order)
+
+        target_marker = target_node_id.casefold()
+        order = [target_marker]
+        distances = {target_marker: 0}
+        cursor = 0
+        while cursor < len(order):
+            current = order[cursor]
+            cursor += 1
+            for neighbor in sorted(neighbors[current], key=lambda marker: (node_order[marker], marker)):
+                if neighbor not in distances:
+                    distances[neighbor] = distances[current] + 1
+                    order.append(neighbor)
+
+        reasons: list[str] = []
+        within_hops = [marker for marker in order if distances[marker] <= max_hops]
+        if len(within_hops) < len(order):
+            reasons.append("max_hops")
+        selected_markers = within_hops[:max_nodes]
+        if len(selected_markers) < len(within_hops):
+            reasons.append("max_nodes")
+        selected_before_characters = set(selected_markers)
+
+        graph_pointer = f"/graphs/{graph_index}"
+        if target_kind == "node":
+            target_pointer = f"{graph_pointer}/nodes/{target_node_index}"
+            target = {
+                "target_kind": "node",
+                "target_id": target_node["id"],
+                "graph_id": graph["id"],
+                "node_id": target_node["id"],
+                "json_pointer": target_pointer,
+            }
+        else:
+            assert target_pin_index is not None
+            target_pointer = f"{graph_pointer}/nodes/{target_node_index}/pins/{target_pin_index}"
+            target = {
+                "target_kind": "pin",
+                "target_id": target_value["id"],
+                "graph_id": graph["id"],
+                "node_id": target_node["id"],
+                "pin_id": target_value["id"],
+                "json_pointer": target_pointer,
+            }
+
+        def omitted_reason(marker: str) -> str:
+            if distances[marker] > max_hops:
+                return "max_hops"
+            if marker not in selected_before_characters:
+                return "max_nodes"
+            return "max_characters"
+
+        def build_slice(markers: list[str]) -> tuple[dict[str, Any], int]:
+            selected_set = set(markers)
+            compact_nodes = [self._compact_node(node_by_id[marker][1], graph_index, node_by_id[marker][0]) for marker in markers]
+            compact_links = [
+                self._compact_link(link, f"{graph_pointer}/links/{link_index}")
+                for link_index, link in enumerate(graph["links"])
+                if link["fromNodeId"].casefold() in selected_set and link["toNodeId"].casefold() in selected_set
+            ]
+            boundary = []
+            for link_index, link in enumerate(graph["links"]):
+                source = link["fromNodeId"].casefold()
+                destination = link["toNodeId"].casefold()
+                crossing = False
+                omitted = ""
+                if direction == "upstream" and destination in selected_set and source in distances and source not in selected_set:
+                    crossing, omitted = True, source
+                elif direction == "downstream" and source in selected_set and destination in distances and destination not in selected_set:
+                    crossing, omitted = True, destination
+                elif direction == "both" and (source in selected_set) != (destination in selected_set):
+                    other = destination if source in selected_set else source
+                    if other in distances:
+                        crossing, omitted = True, other
+                if crossing:
+                    boundary.append(
+                        {
+                            "from_node_id": link.get("fromNodeId", ""),
+                            "from_pin_id": link.get("fromPinId", ""),
+                            "to_node_id": link.get("toNodeId", ""),
+                            "to_pin_id": link.get("toPinId", ""),
+                            "reason": omitted_reason(omitted),
+                            "json_pointer": f"{graph_pointer}/links/{link_index}",
+                        }
+                    )
+            content = {
+                "graph": {"graph_id": graph["id"], "name": graph.get("name", ""), "kind": graph.get("kind", ""), "json_pointer": graph_pointer},
+                "target": target,
+                "nodes": compact_nodes,
+                "links": compact_links,
+                "boundary": boundary,
+            }
+            core = {key: value for key, value in content.items() if key != "boundary"}
+            core_characters = len(json.dumps(core, ensure_ascii=False, separators=(",", ":")))
+            return content, core_characters
+
+        boundary_omitted_count = 0
+        while True:
+            content, core_characters = build_slice(selected_markers)
+            if core_characters > max_characters:
+                removable = next((marker for marker in reversed(selected_markers) if marker != target_marker), None)
+                if removable is None:
+                    raise RaeError(
+                        "BUDGET_TOO_SMALL",
+                        "max_characters is too small to return the target node.",
+                        {"graph_id": graph_id, "target_id": target_id, "required_characters": core_characters, "max_characters": max_characters},
+                    )
+                selected_markers.remove(removable)
+                if "max_characters" not in reasons:
+                    reasons.append("max_characters")
+                continue
+            used_characters = len(json.dumps(content, ensure_ascii=False, separators=(",", ":")))
+            while content["boundary"] and used_characters > max_characters:
+                content["boundary"].pop()
+                boundary_omitted_count += 1
+                used_characters = len(json.dumps(content, ensure_ascii=False, separators=(",", ":")))
+            if boundary_omitted_count and "max_characters" not in reasons:
+                reasons.append("max_characters")
+            break
+
+        omitted_count = len(order) - len(selected_markers)
+        budget = {
+            "limits": {"max_hops": max_hops, "max_nodes": max_nodes, "max_characters": max_characters},
+            "used": {
+                "hops": max((distances[marker] for marker in selected_markers), default=0),
+                "nodes": len(selected_markers),
+                "characters": used_characters,
+            },
+            "truncated": bool(reasons),
+            "truncation_reasons": reasons,
+            "omitted_node_count": omitted_count,
+            "omitted_boundary_count": boundary_omitted_count,
+        }
+        content["direction"] = direction
+        content["budget"] = budget
+
+        evidence = [self.evidence(pack, metadata_path, graph_pointer, descriptor["object_path"], graph_id=graph["id"])]
+        for marker in selected_markers:
+            node_index, node = node_by_id[marker]
+            evidence.append(
+                self.evidence(
+                    pack,
+                    metadata_path,
+                    f"{graph_pointer}/nodes/{node_index}",
+                    descriptor["object_path"],
+                    graph_id=graph["id"],
+                    node_id=node["id"],
+                )
+            )
+        if target_kind == "pin":
+            evidence.append(
+                self.evidence(
+                    pack,
+                    metadata_path,
+                    target_pointer,
+                    descriptor["object_path"],
+                    graph_id=graph["id"],
+                    node_id=target_node["id"],
+                    pin_id=target_value["id"],
+                )
+            )
+        warnings = self._graph_warnings(metadata, graphs)
+        if reasons:
+            warnings.append({"code": "BUDGET_TRUNCATED", "message": "Subgraph was truncated by one or more requested budgets."})
+        return {"pack": pack, "asset": descriptor, "data": content, "evidence": evidence, "warnings": warnings}
 
     def search_assets(self, query: str, pack_path: str | None, offset: int, limit: int) -> dict[str, Any]:
         pack, records = self.assets(pack_path)
@@ -968,7 +1899,13 @@ class ContextPackStore:
             raise RaeError(
                 "BASE_PACK_FINGERPRINT_MISMATCH",
                 "The supplied base Pack fingerprint does not match the selected complete Pack.",
-                {"pack_id": base_info["pack_id"], "expected": base_info["fingerprint"], "received": expected_fingerprint},
+                {
+                    "pack_id": base_info["pack_id"],
+                    "expected": base_info["fingerprint"],
+                    "received": expected_fingerprint,
+                    "available_complete_packs": self._complete_pack_choices(),
+                    "hint": "Pass pack_path together with the matching base_pack_fingerprint from available_complete_packs. Never retry against a different Pack than the one the evidence came from.",
+                },
             )
 
         validated_id = self._validate_request_id(request_id or f"capture_{uuid.uuid4().hex}")
@@ -1060,6 +1997,50 @@ OFFSET_ARG = {"type": "integer", "minimum": 0, "default": 0}
 TOOLS = [
     tool("list_context_packs", "List recent Context Packs with manifest fingerprints and completion state.", {"offset": OFFSET_ARG, "limit": {"type": "integer", "minimum": 1, "maximum": 100, "default": 20}}),
     tool("search_assets", "Search assets and return compact results with index evidence.", {"query": {"type": "string", "default": ""}, "pack_path": PACK_ARG, "offset": OFFSET_ARG, "limit": {"type": "integer", "minimum": 1, "maximum": 100, "default": 20}}),
+    tool("get_asset_outline", "Get compact derived Graph and Readable indexes plus dependency coverage.", {"asset": {"type": "string", "minLength": 1}, "pack_path": PACK_ARG}, ["asset"]),
+    tool(
+        "locate_graph_target",
+        "Locate Graph, Node or Pin candidates with deterministic exact-id, exact-text, prefix and substring ranking. Omit query to enumerate targets in Graph IR order for discovery without reading the full Graph.",
+        {
+            "asset": {"type": "string", "minLength": 1},
+            "query": {"type": "string"},
+            "graph_id": {"type": "string", "minLength": 1},
+            "target_kind": {"type": "string", "enum": ["any", "node", "pin"], "default": "any"},
+            "kind_filter": {"type": "string", "minLength": 1},
+            "pack_path": PACK_ARG,
+            "offset": OFFSET_ARG,
+            "limit": {"type": "integer", "minimum": 1, "maximum": 100, "default": 20},
+        },
+        ["asset"],
+    ),
+    tool(
+        "get_graph_subgraph",
+        "Return a deterministic directional BFS slice around one exact Node or Pin target with explicit hop, node and character budgets.",
+        {
+            "asset": {"type": "string", "minLength": 1},
+            "graph_id": {"type": "string", "minLength": 1},
+            "target_id": {"type": "string", "minLength": 1},
+            "direction": {"type": "string", "enum": ["upstream", "downstream", "both"], "default": "upstream"},
+            "max_hops": {"type": "integer", "minimum": 0, "maximum": 8, "default": 2},
+            "max_nodes": {"type": "integer", "minimum": 1, "maximum": 100, "default": 40},
+            "max_characters": {"type": "integer", "minimum": 1000, "maximum": 30000, "default": 20000},
+            "pack_path": PACK_ARG,
+        },
+        ["asset", "graph_id", "target_id"],
+    ),
+    tool("get_readable_sections", "List stable derived Markdown section ids with summaries and exact line and Unicode character ranges.", {"asset": {"type": "string", "minLength": 1}, "pack_path": PACK_ARG, "offset": OFFSET_ARG, "limit": {"type": "integer", "minimum": 1, "maximum": 100, "default": 20}}, ["asset"]),
+    tool(
+        "get_readable_section",
+        "Read one exact stable Markdown section id with character pagination and precise evidence ranges.",
+        {
+            "asset": {"type": "string", "minLength": 1},
+            "section_id": {"type": "string", "minLength": 1},
+            "pack_path": PACK_ARG,
+            "offset": OFFSET_ARG,
+            "limit": {"type": "integer", "minimum": 1, "maximum": 30000, "default": 6000},
+        },
+        ["asset", "section_id"],
+    ),
     tool("get_asset_summary", "Get a compact asset overview before requesting detail.", {"asset": {"type": "string"}, "pack_path": PACK_ARG}, ["asset"]),
     tool(
         "get_asset_detail",
@@ -1077,17 +2058,17 @@ TOOLS = [
     tool("search_export_text", "Search readable documents and metadata without loading complete files.", {"query": {"type": "string", "minLength": 1}, "asset": {"type": "string"}, "pack_path": PACK_ARG, "offset": OFFSET_ARG, "limit": {"type": "integer", "minimum": 1, "maximum": 100, "default": 20}}, ["query"]),
     tool(
         "request_targeted_snapshot",
-        "After explicit user permission, atomically queue a bounded UE editor request for 1-5 /Game/ assets and dependency depth 0-1. The request is bound to an exact complete base Pack fingerprint.",
+        "After explicit user permission, atomically queue a bounded UE editor request for 1-5 /Game/ assets and dependency depth 0-1. pack_path is mandatory so the request is always bound to an explicitly chosen complete base Pack fingerprint.",
         {
             "asset_paths": {"type": "array", "items": {"type": "string", "pattern": "^/Game/"}, "minItems": 1, "maxItems": 5, "uniqueItems": True},
             "base_pack_fingerprint": {"type": "string", "minLength": 1},
             "permission_granted": {"type": "boolean", "const": True},
             "dependency_depth": {"type": "integer", "minimum": 0, "maximum": 1, "default": 0},
-            "pack_path": PACK_ARG,
+            "pack_path": {"type": "string", "minLength": 1},
             "request_id": {"type": "string", "pattern": "^[A-Za-z0-9_-]{1,64}$"},
             "reason": {"type": "string", "maxLength": 500},
         },
-        ["asset_paths", "base_pack_fingerprint", "permission_granted"],
+        ["asset_paths", "base_pack_fingerprint", "permission_granted", "pack_path"],
         read_only=False,
         idempotent=False,
     ),
@@ -1146,31 +2127,117 @@ def mcp_result(value: dict[str, Any], is_error: bool = False) -> dict[str, Any]:
     return result
 
 
+def _validate_schema_value(value: Any, schema: dict[str, Any], argument: str) -> None:
+    value_type = schema.get("type")
+    valid = True
+    if value_type == "string":
+        valid = isinstance(value, str)
+    elif value_type == "integer":
+        valid = isinstance(value, int) and not isinstance(value, bool)
+    elif value_type == "boolean":
+        valid = isinstance(value, bool)
+    elif value_type == "array":
+        valid = isinstance(value, list)
+    if not valid:
+        raise RaeError("INVALID_ARGUMENT", f"{argument} has an invalid type.", {"argument": argument, "expected": value_type})
+    if "const" in schema and value != schema["const"]:
+        raise RaeError("INVALID_ARGUMENT", f"{argument} must equal {schema['const']!r}.", {"argument": argument})
+    if "enum" in schema and value not in schema["enum"]:
+        raise RaeError("INVALID_ARGUMENT", f"{argument} has an unsupported value.", {"argument": argument, "allowed": schema["enum"]})
+    if isinstance(value, str):
+        if len(value) < schema.get("minLength", 0) or len(value) > schema.get("maxLength", len(value)):
+            raise RaeError("INVALID_ARGUMENT", f"{argument} has an invalid length.", {"argument": argument})
+        if schema.get("pattern") and re.search(str(schema["pattern"]), value) is None:
+            raise RaeError("INVALID_ARGUMENT", f"{argument} has an invalid format.", {"argument": argument})
+    if isinstance(value, int) and not isinstance(value, bool):
+        if value < schema.get("minimum", value) or value > schema.get("maximum", value):
+            raise RaeError("INVALID_ARGUMENT", f"{argument} is outside the supported range.", {"argument": argument})
+    if isinstance(value, list):
+        if len(value) < schema.get("minItems", 0) or len(value) > schema.get("maxItems", len(value)):
+            raise RaeError("INVALID_ARGUMENT", f"{argument} has an invalid item count.", {"argument": argument})
+        if schema.get("uniqueItems") and len({json.dumps(item, ensure_ascii=False, sort_keys=True) for item in value}) != len(value):
+            raise RaeError("INVALID_ARGUMENT", f"{argument} must contain unique items.", {"argument": argument})
+        item_schema = schema.get("items")
+        if isinstance(item_schema, dict):
+            for index, item in enumerate(value):
+                _validate_schema_value(item, item_schema, f"{argument}[{index}]")
+
+
+def _validate_tool_arguments(name: str, arguments: dict[str, Any]) -> None:
+    descriptor = next((item for item in TOOLS if item["name"] == name), None)
+    if descriptor is None:
+        raise RaeError("TOOL_NOT_FOUND", f"Unknown tool: {name}", {"tool": name})
+    schema = descriptor["inputSchema"]
+    for required in schema.get("required", []):
+        if required not in arguments:
+            raise RaeError("INVALID_ARGUMENT", f"Missing required argument: {required}", {"argument": required})
+    properties = schema.get("properties", {})
+    for argument, value in arguments.items():
+        if argument not in properties:
+            raise RaeError("INVALID_ARGUMENT", f"Unknown argument: {argument}", {"argument": argument})
+        _validate_schema_value(value, properties[argument], argument)
+
+
 def call_tool(store: ContextPackStore, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
-    offset = int(arguments.get("offset", 0))
-    limit = int(arguments.get("limit", 20))
+    _validate_tool_arguments(name, arguments)
+    offset = arguments.get("offset", 0)
+    limit = arguments.get("limit", 20)
     if name == "list_context_packs":
         payload = store.list_packs(offset, limit)
     elif name == "search_assets":
-        payload = store.search_assets(str(arguments.get("query", "")), arguments.get("pack_path"), offset, limit)
+        payload = store.search_assets(arguments.get("query", ""), arguments.get("pack_path"), offset, limit)
+    elif name == "get_asset_outline":
+        payload = store.asset_outline(arguments["asset"], arguments.get("pack_path"))
+    elif name == "locate_graph_target":
+        payload = store.locate_graph_target(
+            arguments["asset"],
+            arguments.get("query"),
+            arguments.get("graph_id"),
+            arguments.get("target_kind", "any"),
+            arguments.get("pack_path"),
+            offset,
+            limit,
+            arguments.get("kind_filter"),
+        )
+    elif name == "get_graph_subgraph":
+        payload = store.graph_subgraph(
+            arguments["asset"],
+            arguments["graph_id"],
+            arguments["target_id"],
+            arguments.get("direction", "upstream"),
+            arguments.get("max_hops", 2),
+            arguments.get("max_nodes", 40),
+            arguments.get("max_characters", 20000),
+            arguments.get("pack_path"),
+        )
+    elif name == "get_readable_sections":
+        payload = store.readable_sections(arguments["asset"], arguments.get("pack_path"), offset, limit)
+    elif name == "get_readable_section":
+        payload = store.readable_section(
+            arguments["asset"],
+            arguments["section_id"],
+            arguments.get("pack_path"),
+            offset,
+            arguments.get("limit", 6000),
+        )
     elif name == "get_asset_summary":
-        payload = store.summary(str(arguments["asset"]), arguments.get("pack_path"))
+        payload = store.summary(arguments["asset"], arguments.get("pack_path"))
     elif name == "get_asset_detail":
-        payload = store.detail(str(arguments["asset"]), str(arguments["section"]), arguments.get("item_id"), arguments.get("pack_path"), offset, int(arguments.get("limit", 100)))
+        payload = store.detail(arguments["asset"], arguments["section"], arguments.get("item_id"), arguments.get("pack_path"), offset, arguments.get("limit", 100))
     elif name == "search_export_text":
-        payload = store.search_text(str(arguments["query"]), arguments.get("asset"), arguments.get("pack_path"), offset, limit)
+        payload = store.search_text(arguments["query"], arguments.get("asset"), arguments.get("pack_path"), offset, limit)
     elif name == "request_targeted_snapshot":
         payload = store.submit_synclive_request(
-            arguments.get("asset_paths"),
-            str(arguments.get("base_pack_fingerprint", "")),
-            arguments.get("permission_granted") is True,
+            arguments["asset_paths"],
+            arguments["base_pack_fingerprint"],
+            arguments["permission_granted"],
             arguments.get("dependency_depth", 0),
             arguments.get("pack_path"),
             arguments.get("request_id"),
-            str(arguments.get("reason", "")),
+            arguments.get("reason", ""),
         )
     elif name == "get_snapshot_request_status":
-        payload = store.synclive_status(str(arguments.get("request_id", "")))
+        payload = store.synclive_status(arguments["request_id"])
     else:
         raise RaeError("TOOL_NOT_FOUND", f"Unknown tool: {name}", {"tool": name})
     return envelope(store, payload)
@@ -1197,7 +2264,7 @@ def handle_request(store: ContextPackStore, request: dict[str, Any]) -> dict[str
                 "protocolVersion": requested,
                 "capabilities": {"tools": {"listChanged": False}},
                 "serverInfo": {"name": SERVER_NAME, "version": SERVER_VERSION},
-                "instructions": "Split broad requests into small asset questions. Use search_assets, get_asset_summary, then coverage before cross-asset drill-down. Cite evidence and inspect missing_fields. Only after explicit user permission, bind a bounded request_targeted_snapshot call to the current Pack fingerprint, poll get_snapshot_request_status, verify the new complete Pack, and resume the interrupted task.",
+                "instructions": "Split broad requests into small asset questions. Use search_assets → get_asset_outline → locate_graph_target → get_graph_subgraph/get_readable_section → coverage. Cite Evidence, budgets, warnings and missing_fields. Only when evidence remains insufficient and after explicit user permission, bind a bounded request_targeted_snapshot call to the current Pack fingerprint, poll get_snapshot_request_status, verify the new complete Pack, and resume the interrupted task.",
             },
         )
     if method == "ping":
@@ -1206,7 +2273,11 @@ def handle_request(store: ContextPackStore, request: dict[str, Any]) -> dict[str
         return response(request_id, {"tools": TOOLS})
     if method == "tools/call":
         params = request.get("params", {})
-        arguments = params.get("arguments") or {}
+        if not isinstance(params, dict):
+            return response(request_id, mcp_result(error_envelope(store, RaeError("INVALID_ARGUMENT", "params must be an object")), True))
+        arguments = params.get("arguments", {})
+        if arguments is None:
+            arguments = {}
         if not isinstance(arguments, dict):
             return response(request_id, mcp_result(error_envelope(store, RaeError("INVALID_ARGUMENT", "arguments must be an object")), True))
         try:

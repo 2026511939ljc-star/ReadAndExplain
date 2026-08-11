@@ -5,7 +5,7 @@ param(
 
     [string]$EngineRoot = "C:/Program Files/Epic Games/UE_5.7",
 
-    [string]$Cases = (Join-Path $PSScriptRoot "../Tests/Golden/cases.trans.local.json"),
+    [string]$Cases,
 
     [string]$Python = "python",
 
@@ -23,6 +23,12 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+
+# $PSScriptRoot is not available while param defaults are bound, so resolve the
+# default cases file here instead.
+if ([string]::IsNullOrWhiteSpace($Cases)) {
+    $Cases = Join-Path $PSScriptRoot "../Tests/Golden/cases.trans.local.json"
+}
 Set-StrictMode -Version Latest
 
 function Resolve-ExistingPath {

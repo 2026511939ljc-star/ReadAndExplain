@@ -1,6 +1,6 @@
 # ReadAllandExplains
 
-[![Version](https://img.shields.io/badge/version-4.7.0-blue)](https://github.com/2026511939ljc-star/ReadAndExplain/releases)
+[![Version](https://img.shields.io/badge/version-4.8.0--preview.3-blue)](https://github.com/2026511939ljc-star/ReadAndExplain/releases)
 [![UE5](https://img.shields.io/badge/Unreal%20Engine-5.7-black)](https://www.unrealengine.com/)
 [![Platform](https://img.shields.io/badge/platform-Win64-lightgrey)]()
 [![License](https://img.shields.io/badge/license-UE%20EULA-orange)](https://www.unrealengine.com/en-US/eula)
@@ -17,6 +17,10 @@ ReadAllandExplains 将 Blueprint、Material、Niagara 等资产导出为便于�
 
 ### 核心特性
 
+> `v4.8.0-preview.3` 新增**原生图索引**与 **Niagara Custom HLSL 导出**。导出端直接产出 `graphIndex`（根级汇总 + 每图 `entryPoints`/`searchIndex`，每项带 `jsonPointer`），MCP 校验一致后报 `native_metadata_graph_index` 并不再发出 `GRAPH_INDEX_DERIVED`；索引与实际图数据不一致时自动回退到派生路径，因为过期索引比没有索引更危险。Niagara `CustomHlsl` 节点的代码体以**原文**导出，同时进入 Markdown 代码块、JSON `sourceCode` 字段与检索索引。纯新增字段，4.7 及更早 Pack 无需重新导出。
+>
+> `v4.8.0-preview.1` 新增渐进式证据查询：`get_asset_outline` 先给规模再决定读不读、`locate_graph_target` 确定性定位并支持省略 `query` 枚举发现、`get_graph_subgraph` 按跳数/节点/字符预算取最小闭包并诚实报告截断边界、稳定章节按 `section_id` 精确读取。写操作 `request_targeted_snapshot` 的 `pack_path` 改为必填，确保补拍始终绑定明确基线。全部新能力位于 MCP 层，UE 插件与导出结构不变，现有 4.7 Pack 无需重新导出。
+>
 > `v4.7.0` 在 4.6 可信查询与 SyncLive Lite 基础上，新增 Blueprint CDO、Enum、DataAsset、Material Custom HLSL、Golden Pack 回归，以及严格的 Context Pack 完整性事务。
 
 - **统一 Schema 2 图 IR**：材质节点/Pin/Link 与蓝图执行流进入统一图中间表示，Markdown 与 JSON 共用同一 IR 生成。
@@ -128,6 +132,10 @@ ReadAllandExplains exports Blueprint, Material, and Niagara assets as human-read
 
 ### Key Features
 
+> `v4.8.0-preview.3` adds a **native graph index** and **Niagara Custom HLSL export**. The exporter now emits `graphIndex` directly (a root roll-up plus per-graph `entryPoints` and `searchIndex`, each entry carrying a `jsonPointer`). MCP verifies it against the graphs it describes and reports `native_metadata_graph_index` without raising `GRAPH_INDEX_DERIVED`; on any mismatch it falls back to deriving one, because a stale index is worse than no index. Niagara `CustomHlsl` node bodies are exported **verbatim** into a Markdown code block, a JSON `sourceCode` field and the search index. Purely additive, so 4.7 and earlier Packs need no re-export.
+>
+> `v4.8.0-preview.1` adds progressive evidence queries: `get_asset_outline` reports size before you decide whether to read, `locate_graph_target` locates deterministically and enumerates targets when `query` is omitted, `get_graph_subgraph` takes a minimum closure under hop, node and character budgets while reporting truncation boundaries honestly, and stable sections are read precisely by `section_id`. The write path `request_targeted_snapshot` now requires `pack_path`, so a re-snapshot is always bound to an explicit baseline. All new capability lives in the MCP layer; the UE plugin and export structure are unchanged and existing 4.7 Packs need no re-export.
+>
 > `v4.7.0` builds on the trustworthy 4.6 query layer and SyncLive Lite with Blueprint CDO, Enum, DataAsset, Material Custom HLSL, Golden Pack regression, and strict Context Pack integrity transactions.
 
 - **Unified Schema 2 Graph IR**: Material nodes/Pins/Links and Blueprint execution flow enter a unified graph intermediate representation; Markdown and JSON share the same IR.

@@ -1,6 +1,6 @@
 {
   "name": "readallandexplains",
-  "version": "4.7.0",
+  "version": "4.8.0-preview.3",
   "description": "ReadAllandExplains for CodeBuddy: progressive UE asset analysis with strict, evidence-backed Context Packs and permission-gated SyncLive Lite.",
   "description_en": "Progressive Unreal Engine asset analysis with permission-gated SyncLive Lite and evidence-backed Context Packs.",
   "author": {

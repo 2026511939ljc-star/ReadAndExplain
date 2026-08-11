@@ -98,7 +98,67 @@ class ContractTests(unittest.TestCase):
                 ],
                 "referencers": [],
                 "graphs": [
-                    {"id": "graph-1", "name": "Spawn", "kind": "NiagaraGraph", "nodes": [{"id": "node-1"}], "links": []},
+                    {
+                        "id": "graph-1",
+                        "name": "Spawn",
+                        "kind": "NiagaraGraph",
+                        "nodes": [
+                            {
+                                "id": "node-source",
+                                "name": "Source",
+                                "className": "InputNode",
+                                "title": "Source Intensity",
+                                "comment": "Provides the initial value",
+                                "referencePath": "/Game/Test/Input.Input",
+                                "calleeGraphId": "",
+                                "pins": [
+                                    {"id": "pin-source-out", "name": "Value", "direction": "output", "type": "float", "defaultValue": "1.0"}
+                                ],
+                            },
+                            {
+                                "id": "node-multiply",
+                                "name": "Multiply",
+                                "className": "MultiplyNode",
+                                "title": "Multiply Foam",
+                                "comment": "Scales intensity",
+                                "referencePath": "",
+                                "calleeGraphId": "",
+                                "pins": [
+                                    {"id": "pin-multiply-a", "name": "A", "direction": "input", "type": "float", "defaultValue": ""},
+                                    {"id": "pin-multiply-b", "name": "B", "direction": "input", "type": "float", "defaultValue": "0.75"},
+                                    {"id": "pin-multiply-out", "name": "Result", "direction": "output", "type": "float", "defaultValue": ""},
+                                ],
+                            },
+                            {
+                                "id": "node-output",
+                                "name": "Output",
+                                "className": "OutputNode",
+                                "title": "Final Output",
+                                "comment": "Writes the final value",
+                                "referencePath": "",
+                                "calleeGraphId": "",
+                                "pins": [
+                                    {"id": "pin-output-in", "name": "Value", "direction": "input", "type": "float", "defaultValue": ""}
+                                ],
+                            },
+                        ],
+                        "links": [
+                            {
+                                "fromNodeId": "node-source",
+                                "fromPinId": "pin-source-out",
+                                "toNodeId": "node-multiply",
+                                "toPinId": "pin-multiply-a",
+                                "kind": "data",
+                            },
+                            {
+                                "fromNodeId": "node-multiply",
+                                "fromPinId": "pin-multiply-out",
+                                "toNodeId": "node-output",
+                                "toPinId": "pin-output-in",
+                                "kind": "data",
+                            },
+                        ],
+                    },
                     {"id": "graph-2", "name": "Update", "kind": "NiagaraGraph", "nodes": [], "links": []},
                     {"id": "graph-3", "name": "Render", "kind": "NiagaraGraph", "nodes": [], "links": []},
                 ],
@@ -119,7 +179,23 @@ class ContractTests(unittest.TestCase):
         )
         readable = pack / "Niagara" / "NS_Test_ReadableNiagara.md"
         readable.parent.mkdir(parents=True, exist_ok=True)
-        readable.write_text("# NS_Test\n\nCustom HLSL marker\n泡沫强度控制瀑布浪花。\n", encoding="utf-8-sig")
+        readable.write_text(
+            "# NS_Test\n\n"
+            "Custom HLSL marker\n"
+            "泡沫强度控制瀑布浪花。\n\n"
+            "## 一眼看懂\n\n"
+            "这是 Niagara 测试资产概览。\n\n"
+            "```markdown\n"
+            "## Fenced Fake Heading\n"
+            "```\n\n"
+            "## Parameters\n\n"
+            "User.Intensity 和泡沫强度参数。\n\n"
+            "## Graph IR\n\n"
+            "Source 连接 Multiply，再连接 Output。\n\n"
+            "## Unmapped Notes\n\n"
+            "未知标题使用确定性 section-N。\n",
+            encoding="utf-8-sig",
+        )
         self._dump(
             pack / "Materials" / "M_Test.meta.json",
             {
@@ -181,14 +257,33 @@ class ContractTests(unittest.TestCase):
         self._dump(manifest_path, manifest)
 
     def test_all_tools_publish_read_only_contract(self) -> None:
-        self.assertEqual(7, len(rae.TOOLS))
+        expected = {
+            "list_context_packs",
+            "search_assets",
+            "get_asset_outline",
+            "locate_graph_target",
+            "get_graph_subgraph",
+            "get_readable_sections",
+            "get_readable_section",
+            "get_asset_summary",
+            "get_asset_detail",
+            "search_export_text",
+            "request_targeted_snapshot",
+            "get_snapshot_request_status",
+        }
         descriptors = {descriptor["name"]: descriptor for descriptor in rae.TOOLS}
+        self.assertEqual(expected, set(descriptors))
+        self.assertEqual(12, len(rae.TOOLS))
+        self.assertEqual("0.7.0", rae.SERVER_VERSION)
+        self.assertEqual("rae.mcp/1.0", rae.CONTRACT_VERSION)
+        self.assertEqual({1}, rae.SUPPORTED_PACK_SCHEMAS)
         for name, descriptor in descriptors.items():
             self.assertEqual(name != "request_targeted_snapshot", descriptor["annotations"]["readOnlyHint"])
             self.assertFalse(descriptor["annotations"]["destructiveHint"])
             self.assertEqual(rae.OUTPUT_SCHEMA, descriptor["outputSchema"])
         self.assertFalse(descriptors["request_targeted_snapshot"]["annotations"]["idempotentHint"])
-        self.assertTrue(descriptors["get_snapshot_request_status"]["annotations"]["idempotentHint"])
+        for name in expected - {"request_targeted_snapshot"}:
+            self.assertTrue(descriptors[name]["annotations"]["idempotentHint"])
 
     def test_search_returns_envelope_and_evidence(self) -> None:
         result = rae.call_tool(self.store, "search_assets", {"query": "NS_Test", "limit": 20})
@@ -215,6 +310,521 @@ class ContractTests(unittest.TestCase):
         self.assertEqual(3, result["page"]["total"])
         self.assertTrue(result["page"]["truncated"])
         self.assertEqual("2", result["page"]["next_cursor"])
+
+    def test_asset_outline_derives_compact_indexes_without_mutating_pack(self) -> None:
+        metadata_path = self.complete / "Niagara" / "NS_Test.meta.json"
+        readable_path = self.complete / "Niagara" / "NS_Test_ReadableNiagara.md"
+        before = (metadata_path.read_bytes(), readable_path.read_bytes())
+        result = rae.call_tool(self.store, "get_asset_outline", {"asset": "NS_Test"})
+        graph = result["data"]["graphs"][0]
+        self.assertEqual(
+            {
+                "graph_id",
+                "name",
+                "kind",
+                "node_count",
+                "pin_count",
+                "edge_count",
+                "json_pointer",
+            },
+            set(graph),
+        )
+        self.assertEqual((3, 5, 2), (graph["node_count"], graph["pin_count"], graph["edge_count"]))
+        self.assertEqual("/graphs/0", graph["json_pointer"])
+        self.assertEqual("derived_metadata_graphs", result["data"]["graph_index_source"])
+        self.assertEqual("derived_markdown", result["data"]["readable_index_source"])
+        self.assertEqual(1, result["data"]["coverage"]["missing_project_dependency_count"])
+        warning_codes = {warning["code"] for warning in result["warnings"]}
+        self.assertIn("GRAPH_INDEX_DERIVED", warning_codes)
+        self.assertIn("READABLE_INDEX_DERIVED", warning_codes)
+        self.assertEqual(before, (metadata_path.read_bytes(), readable_path.read_bytes()))
+
+    def test_asset_outline_distinguishes_empty_and_missing_graphs(self) -> None:
+        empty = rae.call_tool(self.store, "get_asset_outline", {"asset": "M_Test"})
+        self.assertEqual([], empty["data"]["graphs"])
+        self.assertEqual("derived_metadata_graphs", empty["data"]["graph_index_source"])
+        self.assertNotIn("graphs", empty["missing_fields"])
+        self.assertNotIn("GRAPH_INDEX_UNAVAILABLE", {warning["code"] for warning in empty["warnings"]})
+
+        metadata_path = self.complete / "Materials" / "M_Test.meta.json"
+        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+        metadata.pop("graphs")
+        self._dump(metadata_path, metadata)
+        self.store = rae.ContextPackStore(self.root)
+        missing = rae.call_tool(self.store, "get_asset_outline", {"asset": "M_Test"})
+        self.assertEqual([], missing["data"]["graphs"])
+        self.assertEqual("unavailable", missing["data"]["graph_index_source"])
+        self.assertIn("graphs", missing["missing_fields"])
+        self.assertIn("GRAPH_INDEX_UNAVAILABLE", {warning["code"] for warning in missing["warnings"]})
+
+    def _inject_native_graph_index(self, metadata_path: Path) -> dict[str, Any]:
+        """Adds a root graphIndex matching what the CP7 exporter emits."""
+        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+        locators = []
+        for graph_index, graph in enumerate(metadata["graphs"]):
+            nodes = graph.get("nodes") or []
+            locators.append(
+                {
+                    "graphId": graph["id"],
+                    "name": graph.get("name", ""),
+                    "kind": graph.get("kind", ""),
+                    "nodeCount": len(nodes),
+                    "pinCount": sum(len(node.get("pins") or []) for node in nodes),
+                    "linkCount": len(graph.get("links") or []),
+                    "jsonPointer": f"/graphs/{graph_index}",
+                }
+            )
+        metadata["graphIndex"] = {
+            "indexVersion": 1,
+            "source": "native",
+            "graphCount": len(locators),
+            "nodeCount": sum(item["nodeCount"] for item in locators),
+            "pinCount": sum(item["pinCount"] for item in locators),
+            "linkCount": sum(item["linkCount"] for item in locators),
+            "graphs": locators,
+        }
+        self._dump(metadata_path, metadata)
+        self.store = rae.ContextPackStore(self.root)
+        return metadata
+
+    def test_native_graph_index_is_reported_and_clears_derived_warning(self) -> None:
+        metadata_path = self.complete / "Niagara" / "NS_Test.meta.json"
+        self._inject_native_graph_index(metadata_path)
+        result = rae.call_tool(self.store, "get_asset_outline", {"asset": "NS_Test"})
+        self.assertEqual("native_metadata_graph_index", result["data"]["graph_index_source"])
+        self.assertNotIn("GRAPH_INDEX_DERIVED", {warning["code"] for warning in result["warnings"]})
+        # Counts must stay identical to the derived path: the index is a Raw Fact,
+        # not a different opinion about the graph.
+        self.assertEqual((3, 5, 2), (result["data"]["graphs"][0]["node_count"], result["data"]["graphs"][0]["pin_count"], result["data"]["graphs"][0]["edge_count"]))
+
+    def test_inconsistent_native_graph_index_falls_back_to_derived(self) -> None:
+        metadata_path = self.complete / "Niagara" / "NS_Test.meta.json"
+        metadata = self._inject_native_graph_index(metadata_path)
+        # A stale index that disagrees with metadata.graphs must never be trusted.
+        metadata["graphIndex"]["graphs"][0]["nodeCount"] = 999
+        self._dump(metadata_path, metadata)
+        self.store = rae.ContextPackStore(self.root)
+        result = rae.call_tool(self.store, "get_asset_outline", {"asset": "NS_Test"})
+        self.assertEqual("derived_metadata_graphs", result["data"]["graph_index_source"])
+        self.assertIn("GRAPH_INDEX_DERIVED", {warning["code"] for warning in result["warnings"]})
+        self.assertEqual(3, result["data"]["graphs"][0]["node_count"])
+
+    def test_graph_index_without_native_source_is_not_trusted(self) -> None:
+        metadata_path = self.complete / "Niagara" / "NS_Test.meta.json"
+        metadata = self._inject_native_graph_index(metadata_path)
+        metadata["graphIndex"].pop("source")
+        self._dump(metadata_path, metadata)
+        self.store = rae.ContextPackStore(self.root)
+        result = rae.call_tool(self.store, "get_asset_outline", {"asset": "NS_Test"})
+        self.assertEqual("derived_metadata_graphs", result["data"]["graph_index_source"])
+        self.assertIn("GRAPH_INDEX_DERIVED", {warning["code"] for warning in result["warnings"]})
+
+    def test_locate_graph_target_handles_graph_node_pin_and_resolution(self) -> None:
+        graph = rae.call_tool(
+            self.store,
+            "locate_graph_target",
+            {"asset": "NS_Test", "query": "Spawn", "target_kind": "any"},
+        )
+        self.assertEqual("unique", graph["data"]["resolution"])
+        self.assertEqual("graph", graph["data"]["candidates"][0]["target_kind"])
+        self.assertEqual("/graphs/0", graph["data"]["candidates"][0]["evidence"]["json_pointer"])
+
+        node = rae.call_tool(
+            self.store,
+            "locate_graph_target",
+            {"asset": "NS_Test", "query": "node-multiply", "target_kind": "node"},
+        )
+        self.assertEqual("unique", node["data"]["resolution"])
+        self.assertEqual("exact_id", node["data"]["candidates"][0]["match_type"])
+        self.assertEqual("node-multiply", node["evidence"][0]["node_id"])
+
+        pin = rae.call_tool(
+            self.store,
+            "locate_graph_target",
+            {"asset": "NS_Test", "query": "pin-multiply-a", "graph_id": "graph-1", "target_kind": "pin"},
+        )
+        self.assertEqual("unique", pin["data"]["resolution"])
+        self.assertEqual("pin", pin["data"]["candidates"][0]["target_kind"])
+        self.assertEqual("pin-multiply-a", pin["evidence"][0]["pin_id"])
+        self.assertEqual("/graphs/0/nodes/1/pins/0", pin["evidence"][0]["json_pointer"])
+
+        ambiguous = rae.call_tool(
+            self.store,
+            "locate_graph_target",
+            {"asset": "NS_Test", "query": "Value", "target_kind": "pin", "limit": 1},
+        )
+        self.assertEqual("ambiguous", ambiguous["data"]["resolution"])
+        self.assertEqual(2, ambiguous["page"]["total"])
+        self.assertTrue(ambiguous["page"]["truncated"])
+
+        not_found = rae.call_tool(
+            self.store,
+            "locate_graph_target",
+            {"asset": "NS_Test", "query": "does-not-exist", "target_kind": "any"},
+        )
+        self.assertEqual("not_found", not_found["data"]["resolution"])
+        self.assertEqual([], not_found["data"]["candidates"])
+        self.assertIsNone(not_found["error"])
+
+    def test_locate_graph_target_enumerates_without_query(self) -> None:
+        listed = rae.call_tool(
+            self.store,
+            "locate_graph_target",
+            {"asset": "NS_Test", "graph_id": "graph-1", "target_kind": "node"},
+        )
+        self.assertEqual("listed", listed["data"]["resolution"])
+        self.assertTrue(listed["data"]["list_mode"])
+        self.assertEqual("", listed["data"]["query"])
+        self.assertTrue(listed["data"]["candidates"])
+        self.assertIsNone(listed["error"])
+        for candidate in listed["data"]["candidates"]:
+            self.assertEqual("listed", candidate["match_type"])
+            self.assertEqual("node", candidate["target_kind"])
+        pointers = [candidate["json_pointer"] for candidate in listed["data"]["candidates"]]
+        self.assertEqual(sorted(pointers), pointers)
+
+        filtered = rae.call_tool(
+            self.store,
+            "locate_graph_target",
+            {"asset": "NS_Test", "graph_id": "graph-1", "target_kind": "node", "kind_filter": "__no_such_class__"},
+        )
+        self.assertEqual("listed", filtered["data"]["resolution"])
+        self.assertEqual([], filtered["data"]["candidates"])
+        self.assertEqual("__no_such_class__", filtered["data"]["kind_filter"])
+
+    def test_locate_graph_target_not_found_returns_discovery_samples(self) -> None:
+        missed = rae.call_tool(
+            self.store,
+            "locate_graph_target",
+            {"asset": "NS_Test", "graph_id": "graph-1", "query": "__absent_target__", "target_kind": "node"},
+        )
+        self.assertEqual("not_found", missed["data"]["resolution"])
+        self.assertFalse(missed["data"]["list_mode"])
+        samples = missed["data"]["available_samples"]
+        self.assertTrue(samples)
+        self.assertLessEqual(len(samples), 10)
+        self.assertIn("discovery_hint", missed["data"])
+        for sample in samples:
+            self.assertTrue(sample["node_id"])
+            self.assertTrue(sample["json_pointer"].startswith("/graphs/"))
+        codes = {warning["code"] for warning in missed["warnings"]}
+        self.assertIn("TARGET_NOT_FOUND_SAMPLES_PROVIDED", codes)
+
+    def test_graph_subgraph_resolves_node_and_pin_in_each_direction(self) -> None:
+        common = {
+            "asset": "NS_Test",
+            "graph_id": "graph-1",
+            "target_id": "node-multiply",
+            "max_hops": 8,
+            "max_nodes": 100,
+            "max_characters": 30000,
+        }
+        expected = {
+            "upstream": ["node-multiply", "node-source"],
+            "downstream": ["node-multiply", "node-output"],
+            "both": ["node-multiply", "node-source", "node-output"],
+        }
+        for direction, node_ids in expected.items():
+            with self.subTest(direction=direction):
+                result = rae.call_tool(self.store, "get_graph_subgraph", {**common, "direction": direction})
+                self.assertEqual(node_ids, [node["node_id"] for node in result["data"]["nodes"]])
+                self.assertFalse(result["data"]["budget"]["truncated"])
+                self.assertEqual(len(node_ids) - 1, len(result["data"]["links"]))
+
+        pin = rae.call_tool(
+            self.store,
+            "get_graph_subgraph",
+            {
+                **common,
+                "target_id": "pin-multiply-a",
+                "direction": "upstream",
+            },
+        )
+        self.assertEqual("pin", pin["data"]["target"]["target_kind"])
+        self.assertEqual("node-multiply", pin["data"]["target"]["node_id"])
+        self.assertTrue(any(evidence.get("pin_id") == "pin-multiply-a" for evidence in pin["evidence"]))
+
+    def test_graph_subgraph_reports_all_three_budget_truncations(self) -> None:
+        base = {
+            "asset": "NS_Test",
+            "graph_id": "graph-1",
+            "direction": "both",
+            "max_characters": 30000,
+        }
+        hop = rae.call_tool(
+            self.store,
+            "get_graph_subgraph",
+            {**base, "target_id": "node-multiply", "max_hops": 0, "max_nodes": 100},
+        )
+        self.assertEqual(["max_hops"], hop["data"]["budget"]["truncation_reasons"])
+        self.assertEqual(2, hop["data"]["budget"]["omitted_node_count"])
+
+        nodes = rae.call_tool(
+            self.store,
+            "get_graph_subgraph",
+            {**base, "target_id": "node-multiply", "max_hops": 8, "max_nodes": 1},
+        )
+        self.assertEqual(["max_nodes"], nodes["data"]["budget"]["truncation_reasons"])
+        self.assertEqual(["node-multiply"], [node["node_id"] for node in nodes["data"]["nodes"]])
+
+        characters = rae.call_tool(
+            self.store,
+            "get_graph_subgraph",
+            {
+                "asset": "NS_Test",
+                "graph_id": "graph-1",
+                "target_id": "node-source",
+                "direction": "downstream",
+                "max_hops": 8,
+                "max_nodes": 100,
+                "max_characters": 1000,
+            },
+        )
+        self.assertIn("max_characters", characters["data"]["budget"]["truncation_reasons"])
+        self.assertLessEqual(characters["data"]["budget"]["used"]["characters"], 1000)
+        self.assertEqual("node-source", characters["data"]["nodes"][0]["node_id"])
+        for result in (hop, nodes, characters):
+            self.assertTrue(result["data"]["budget"]["truncated"])
+            self.assertIn("BUDGET_TRUNCATED", {warning["code"] for warning in result["warnings"]})
+            self.assertTrue(result["data"]["boundary"])
+
+    def test_graph_subgraph_budget_too_small_and_target_errors_are_wrapped(self) -> None:
+        metadata_path = self.complete / "Niagara" / "NS_Test.meta.json"
+        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+        metadata["graphs"][0]["nodes"][0]["comment"] = "x" * 4000
+        self._dump(metadata_path, metadata)
+        self.store = rae.ContextPackStore(self.root)
+        cases = [
+            (
+                {
+                    "asset": "NS_Test",
+                    "graph_id": "graph-1",
+                    "target_id": "node-source",
+                    "max_characters": 1000,
+                },
+                "BUDGET_TOO_SMALL",
+            ),
+            (
+                {
+                    "asset": "NS_Test",
+                    "graph_id": "graph-1",
+                    "target_id": "missing-target",
+                },
+                "GRAPH_TARGET_NOT_FOUND",
+            ),
+            (
+                {
+                    "asset": "NS_Test",
+                    "graph_id": "missing-graph",
+                    "target_id": "node-source",
+                },
+                "GRAPH_NOT_FOUND",
+            ),
+        ]
+        for index, (arguments, code) in enumerate(cases):
+            with self.subTest(index=index):
+                response = rae.handle_request(
+                    self.store,
+                    {"jsonrpc": "2.0", "id": index, "method": "tools/call", "params": {"name": "get_graph_subgraph", "arguments": arguments}},
+                )
+                assert response
+                self.assertTrue(response["result"]["isError"])
+                self.assertEqual(code, response["result"]["structuredContent"]["error"]["code"])
+
+    def test_graph_validation_allows_pin_guid_reuse_across_different_nodes(self) -> None:
+        metadata_path = self.complete / "Niagara" / "NS_Test.meta.json"
+        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+        metadata["graphs"][0]["nodes"][2]["pins"][0]["id"] = "pin-source-out"
+        metadata["graphs"][0]["links"][1]["toPinId"] = "pin-source-out"
+        self._dump(metadata_path, metadata)
+        self.store = rae.ContextPackStore(self.root)
+
+        result = rae.call_tool(
+            self.store,
+            "get_graph_subgraph",
+            {
+                "asset": "NS_Test",
+                "graph_id": "graph-1",
+                "target_id": "node-output",
+                "direction": "upstream",
+                "max_hops": 8,
+                "max_nodes": 100,
+                "max_characters": 30000,
+            },
+        )
+        self.assertEqual(["node-output", "node-multiply", "node-source"], [node["node_id"] for node in result["data"]["nodes"]])
+
+    def test_legacy_graph_diagnostics_do_not_block_outline_or_location(self) -> None:
+        metadata_path = self.complete / "Niagara" / "NS_Test.meta.json"
+        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+        metadata["graphs"][0]["links"][0]["fromPinId"] = "missing-pin"
+        self._dump(metadata_path, metadata)
+        self.store = rae.ContextPackStore(self.root)
+
+        outline = rae.call_tool(self.store, "get_asset_outline", {"asset": "NS_Test"})
+        located = rae.call_tool(
+            self.store,
+            "locate_graph_target",
+            {"asset": "NS_Test", "query": "node-source", "target_kind": "node"},
+        )
+        for result in (outline, located):
+            self.assertIn("GRAPH_LINKS_INCOMPLETE", {warning["code"] for warning in result["warnings"]})
+        self.assertEqual("unique", located["data"]["resolution"])
+
+    def test_duplicate_node_identity_blocks_subgraph_but_not_outline(self) -> None:
+        metadata_path = self.complete / "Niagara" / "NS_Test.meta.json"
+        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+        metadata["graphs"][0]["nodes"][2]["id"] = "node-source"
+        self._dump(metadata_path, metadata)
+        self.store = rae.ContextPackStore(self.root)
+
+        outline = rae.call_tool(self.store, "get_asset_outline", {"asset": "NS_Test"})
+        self.assertIn("GRAPH_IDENTITY_DEGRADED", {warning["code"] for warning in outline["warnings"]})
+        with self.assertRaises(rae.RaeError) as invalid:
+            self.store.graph_subgraph("NS_Test", "graph-1", "node-multiply", "upstream", 2, 40, 20000, None)
+        self.assertEqual("GRAPH_DATA_INVALID", invalid.exception.code)
+
+    def test_missing_index_uses_stable_error(self) -> None:
+        material_path = self.complete / "Materials" / "M_Test.meta.json"
+        material = json.loads(material_path.read_text(encoding="utf-8"))
+        material.pop("graphs")
+        self._dump(material_path, material)
+        self.store = rae.ContextPackStore(self.root)
+        request = {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {"name": "locate_graph_target", "arguments": {"asset": "M_Test", "query": "anything"}},
+        }
+        response = rae.handle_request(self.store, request)
+        assert response
+        self.assertEqual("GRAPH_INDEX_UNAVAILABLE", response["result"]["structuredContent"]["error"]["code"])
+
+    def test_readable_sections_have_stable_ids_ranges_and_ignore_fences(self) -> None:
+        result = rae.call_tool(
+            self.store,
+            "get_readable_sections",
+            {"asset": "NS_Test", "offset": 0, "limit": 2},
+        )
+        self.assertEqual(4, result["page"]["total"])
+        self.assertEqual(2, result["page"]["returned"])
+        self.assertTrue(result["page"]["truncated"])
+
+        full = rae.call_tool(self.store, "get_readable_sections", {"asset": "NS_Test"})
+        sections = full["data"]["sections"]
+        self.assertEqual(["overview", "parameters", "graph-ir", "section-1"], [section["section_id"] for section in sections])
+        self.assertNotIn("Fenced Fake Heading", [section["title"] for section in sections])
+        text = (self.complete / "Niagara" / "NS_Test_ReadableNiagara.md").read_bytes().decode("utf-8-sig")
+        for section, evidence in zip(sections, full["evidence"]):
+            selected = text[section["character_start"] : section["character_end"]]
+            self.assertTrue(selected.startswith("## "))
+            self.assertEqual(section["section_id"], evidence["section_id"])
+            self.assertEqual(section["character_start"], evidence["character_start"])
+            self.assertEqual(section["character_end"], evidence["character_end"])
+            self.assertGreaterEqual(section["line_end"], section["line_start"])
+
+    def test_readable_section_is_exact_unicode_and_character_paginated(self) -> None:
+        sections = rae.call_tool(self.store, "get_readable_sections", {"asset": "NS_Test"})["data"]["sections"]
+        overview = next(section for section in sections if section["section_id"] == "overview")
+        text = (self.complete / "Niagara" / "NS_Test_ReadableNiagara.md").read_bytes().decode("utf-8-sig")
+        expected = text[overview["character_start"] : overview["character_end"]]
+        full = rae.call_tool(
+            self.store,
+            "get_readable_section",
+            {"asset": "NS_Test", "section_id": "overview", "limit": 30000},
+        )
+        self.assertEqual(expected, full["data"]["text"])
+        self.assertEqual(overview, full["data"]["section"])
+        self.assertEqual(overview["character_start"], full["evidence"][0]["character_start"])
+        self.assertEqual(overview["character_end"], full["evidence"][0]["character_end"])
+
+        partial = rae.call_tool(
+            self.store,
+            "get_readable_section",
+            {"asset": "NS_Test", "section_id": "overview", "offset": 3, "limit": 9},
+        )
+        self.assertEqual(expected[3:12], partial["data"]["text"])
+        self.assertEqual(len(expected), partial["page"]["total"])
+        self.assertEqual(overview["character_start"] + 3, partial["evidence"][0]["character_start"])
+
+    def test_readable_section_fallback_semantics_and_not_found_error(self) -> None:
+        fallback = rae.call_tool(self.store, "get_readable_sections", {"asset": "M_Test"})
+        self.assertEqual(["document"], [section["section_id"] for section in fallback["data"]["sections"]])
+        document = rae.call_tool(
+            self.store,
+            "get_readable_section",
+            {"asset": "M_Test", "section_id": "document"},
+        )
+        source_text = rae.load_text(self.complete / "Materials" / "M_Test_ReadableMaterial.md")
+        self.assertEqual(source_text, document["data"]["text"])
+
+        response = rae.handle_request(
+            self.store,
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "tools/call",
+                "params": {"name": "get_readable_section", "arguments": {"asset": "NS_Test", "section_id": "missing"}},
+            },
+        )
+        assert response
+        self.assertTrue(response["result"]["isError"])
+        self.assertEqual("READABLE_SECTION_NOT_FOUND", response["result"]["structuredContent"]["error"]["code"])
+
+    def test_readable_semantic_ids_cover_mvp_categories(self) -> None:
+        text = (
+            "## Overview\nA\n"
+            "## Parameters\nB\n"
+            "## Dependencies and References\nC\n"
+            "## Graph IR\nD\n"
+            "## Niagara Details\nE\n"
+            "## Technical Diagnostics\nF\n"
+            "## AI Prompt\nG\n"
+        )
+        sections = rae.ContextPackStore._readable_sections(text)
+        self.assertEqual(
+            ["overview", "parameters", "relationships", "graph-ir", "niagara-details", "technical", "ai-prompt"],
+            [section["section_id"] for section in sections],
+        )
+
+    def test_invalid_new_tool_arguments_are_wrapped_as_invalid_argument(self) -> None:
+        cases = [
+            ("locate_graph_target", {"asset": "NS_Test", "query": "x", "target_kind": "graph"}),
+            ("get_graph_subgraph", {"asset": "NS_Test", "graph_id": "graph-1", "target_id": "node-source", "max_hops": 9}),
+            ("get_readable_sections", {"asset": "NS_Test", "offset": "0"}),
+            ("get_readable_section", {"asset": "NS_Test"}),
+        ]
+        for index, (name, arguments) in enumerate(cases):
+            with self.subTest(index=index):
+                response = rae.handle_request(
+                    self.store,
+                    {"jsonrpc": "2.0", "id": index, "method": "tools/call", "params": {"name": name, "arguments": arguments}},
+                )
+                assert response
+                self.assertTrue(response["result"]["isError"])
+                self.assertEqual("INVALID_ARGUMENT", response["result"]["structuredContent"]["error"]["code"])
+
+        malformed_requests = [
+            {"jsonrpc": "2.0", "id": 20, "method": "tools/call", "params": []},
+            {"jsonrpc": "2.0", "id": 21, "method": "tools/call", "params": {"name": "get_asset_outline", "arguments": []}},
+        ]
+        for request in malformed_requests:
+            response = rae.handle_request(self.store, request)
+            assert response
+            self.assertTrue(response["result"]["isError"])
+            self.assertEqual("INVALID_ARGUMENT", response["result"]["structuredContent"]["error"]["code"])
+
+    def test_initialize_advertises_progressive_v48_query_flow(self) -> None:
+        response = rae.handle_request(
+            self.store,
+            {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"protocolVersion": "2025-11-25"}},
+        )
+        assert response
+        instructions = response["result"]["instructions"]
+        expected = ["search_assets", "get_asset_outline", "locate_graph_target", "get_graph_subgraph/get_readable_section", "coverage"]
+        positions = [instructions.index(marker) for marker in expected]
+        self.assertEqual(positions, sorted(positions))
+        self.assertIn("request_targeted_snapshot", instructions)
 
     def test_coverage_lists_targeted_missing_project_dependencies(self) -> None:
         result = rae.call_tool(
@@ -262,6 +872,23 @@ class ContractTests(unittest.TestCase):
         self.assertEqual("PERMISSION_REQUIRED", raised.exception.code)
         self.assertFalse((self.root / "SyncLive" / "Pending" / "permission-test.json").exists())
 
+    def test_targeted_snapshot_requires_explicit_pack_path(self) -> None:
+        pack_info = self.store.pack_info(self.complete)[0]
+        with self.assertRaises(rae.RaeError) as raised:
+            rae.call_tool(
+                self.store,
+                "request_targeted_snapshot",
+                {
+                    "asset_paths": ["/Game/Test/M_Missing.M_Missing"],
+                    "base_pack_fingerprint": pack_info["fingerprint"],
+                    "permission_granted": True,
+                    "request_id": "implicit-pack-test",
+                },
+            )
+        self.assertEqual("INVALID_ARGUMENT", raised.exception.code)
+        self.assertEqual("pack_path", raised.exception.details["argument"])
+        self.assertFalse((self.root / "SyncLive" / "Pending" / "implicit-pack-test.json").exists())
+
     def test_targeted_snapshot_is_bounded_bound_to_pack_and_atomic(self) -> None:
         pack_info = self.store.pack_info(self.complete)[0]
         result = rae.call_tool(
@@ -300,6 +927,12 @@ class ContractTests(unittest.TestCase):
                 request_id="stale-test",
             )
         self.assertEqual("BASE_PACK_FINGERPRINT_MISMATCH", stale.exception.code)
+        self.assertIn("available_complete_packs", stale.exception.details)
+        self.assertTrue(stale.exception.details["available_complete_packs"])
+        for choice in stale.exception.details["available_complete_packs"]:
+            self.assertTrue(choice["pack_id"])
+            self.assertTrue(choice["fingerprint"])
+        self.assertIn("hint", stale.exception.details)
 
         fingerprint = self.store.pack_info(self.complete)[0]["fingerprint"]
         invalid_cases = [

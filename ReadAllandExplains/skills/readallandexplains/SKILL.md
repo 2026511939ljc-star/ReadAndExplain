@@ -34,28 +34,23 @@ description: 分析 ReadAllandExplains 导出的 Unreal Engine AI Context Pack�
 
 1. 未指定 Context Pack 时调用 `list_context_packs`，选择最新 `state=complete` 的包；用户指定包时直接使用。
 2. 调用 `search_assets` 定位根资产，不先读取完整 Markdown 或 `.meta.json`。
-3. 调用 `get_asset_summary` 获取资产类型、参数线索、依赖数量、Graph、Renderer 和 Curve 摘要。
-4. 涉及跨资产关系或 `dependency_count>0` 时，调用 `get_asset_detail(section="coverage")`，先看哪些直接依赖已在包内、哪些 `/Game/` 依赖仍需定向补充。
-5. 只为当前小任务读取详情：
-   - 参数：`parameters`
-   - 依赖覆盖：`coverage`
-   - 依赖或反向引用：`dependencies`、`referencers`
-   - 图列表：`graphs`
-   - 单张完整图：`graph`，并提供 `item_id`
-   - Renderer：`renderers`
-   - 曲线：`curves`，单条曲线提供 `item_id`
-   - 人类摘要：`readable`，使用 `offset`、`limit` 分段
-   - 完整结构：仅确有必要时使用 `metadata`
-6. 查 Custom HLSL、节点名、参数名或模块名时，先调用 `search_export_text`，命中后再读取目标段落或图。
+3. 调用 `get_asset_outline` 获取 Graph、Readable 章节和 Coverage 概览；旧 Pack 出现 `GRAPH_INDEX_DERIVED` 或 `READABLE_INDEX_DERIVED` 时表示索引由已有事实确定性派生，不能把它误写成 UE 原生字段。
+4. 当前问题指向节点、参数、Pin、输出或函数时，调用 `locate_graph_target`。`resolution=ambiguous` 时展示候选并缩小查询，不能自行选择；`resolution=not_found` 时改查 Readable、Renderer、参数或证据缺口。
+5. 候选唯一后调用 `get_graph_subgraph`，默认 `direction="upstream"`、`max_hops=2`、`max_nodes=40`、`max_characters=20000`；只在需要消费者关系时使用 `downstream` 或 `both`。
+6. 需要阅读解释性正文时，先调用 `get_readable_sections`，再用稳定 `section_id` 调用 `get_readable_section`；不要先按猜测行号切整份文档。
+7. 只为当前小任务补充传统详情：参数用 `parameters`，依赖覆盖用 `coverage`，依赖或反向引用用 `dependencies`、`referencers`，Renderer 用 `renderers`，曲线用 `curves`。完整 `graph`、`metadata` 和按字符读取整份 `readable` 仅作为旧服务或证据诊断的兜底。
+8. 查 Custom HLSL、未知术语或无法由结构定位的文本时使用 `search_export_text`，命中后回到对应章节或 Graph 取证。
 
 若 MCP 不可用，按同样顺序直接读取 `context-pack.json` → `index.json` → 目标资产文档 → 目标 `.meta.json`。禁止无目标地加载整个导出目录。
 
 ### 3. 校验每次返回
 
 - `error` 非空时不得把返回内容当事实。
-- `warnings` 和 `missing_fields` 必须进入当前缺口判断。
-- `page.truncated=true` 时按 `next_cursor` 继续读取，直到当前问题所需部分完整；不得把第一页当成完整 Graph 或列表。
-- 使用 `pack_id`、`state` 和 `fingerprint` 保证同一轮证据来自同一个完整快照，不混用不同 Pack。
+- `warnings` 和 `missing_fields` 必须进入当前缺口判断；`GRAPH_INDEX_UNAVAILABLE` 表示没有可索引的图证据，不等于资产确认没有图。
+- `page.truncated=true` 时按 `next_cursor` 继续读取，直到当前列表或章节满足问题需要。
+- `data.budget.truncated=true` 时必须报告 `truncation_reasons` 和 `boundary`；子图不是完整闭包时，不得把边界外节点解释为不存在。
+- 使用 `pack_id`、`state` 和 `fingerprint` 保证同一轮证据来自同一个完整快照；跨 Pack 时即使 Graph、Node 或 Pin ID 相同也要重新核对。
+- Evidence 中的 `graph_id`、`node_id`、`pin_id` 是稳定身份；`json_pointer` 和字符范围只精确对应当前不可变 Pack。
 - Markdown 用于速读，`.meta.json` 用于核对节点、Pin、Link、Renderer、绑定和曲线 Key。
 - 文本若返回 `TEXT_ENCODING_INVALID`，停止引用该文档并要求重新生成 UTF-8 快照；不得输出替换字符或猜测乱码原文。
 
@@ -112,7 +107,8 @@ description: 分析 ReadAllandExplains 导出的 Unreal Engine AI Context Pack�
 
 ## 常用路径
 
-- “这个特效怎么工作的”：根资产摘要 → coverage → Renderer → 关键 Graph → 关键曲线 → 当前问题相关 `/Game/` 依赖。
-- “材质为什么这样显示”：材质实例覆盖 → 父材质 → 目标材质属性链 → 相关材质函数 → 美术调节建议。
-- “Niagara 怎么驱动材质”：Renderer Binding → Niagara 参数来源 → 材质参数消费者 → 曲线或模块写入点。
-- “哪里可能有问题”：无效 Binding、源变量不存在、缺失项目依赖、未知节点、悬空 Link、异常曲线范围和透明 Overdraw 风险。
+- “这个特效怎么工作的”：`search_assets` → `get_asset_outline` → Renderer → `locate_graph_target` → `get_graph_subgraph` → 关键曲线 → 当前问题相关 `/Game/` 依赖。
+- “材质为什么这样显示”：材质实例覆盖 → 父材质 → 定位目标材质输出或 Pin → 上游最小子图 → 相关材质函数 → 美术调节建议。
+- “Niagara 怎么驱动材质”：Renderer Binding → 定位 Niagara 参数或模块 → 上游/下游子图 → 材质参数消费者 → 曲线或模块写入点。
+- “这份文档某部分说了什么”：`get_readable_sections` → 精确 `section_id` → `get_readable_section`，不要猜行号或加载整份文档。
+- “哪里可能有问题”：Coverage → 无效 Binding、源变量不存在、缺失项目依赖、未知节点、悬空 Link、子图边界、异常曲线范围和透明 Overdraw 风险。

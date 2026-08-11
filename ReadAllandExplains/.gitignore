@@ -14,3 +14,6 @@ __pycache__/
 Tests/Golden/*.local.json
 Tests/Golden/.baselines/
 Tests/Golden/.reports/
+
+# Local release packaging output
+dist/

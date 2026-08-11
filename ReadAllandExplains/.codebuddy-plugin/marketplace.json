@@ -9,7 +9,7 @@
       "name": "readallandexplains",
       "source": ".",
       "description": "Progressive Unreal Engine analysis with strict Context Pack integrity and permission-gated SyncLive Lite.",
-      "version": "4.7.0",
+      "version": "4.8.0-preview.3",
       "category": "game-development",
       "repository": "https://github.com/2026511939ljc-star/ReadAndExplain"
     }

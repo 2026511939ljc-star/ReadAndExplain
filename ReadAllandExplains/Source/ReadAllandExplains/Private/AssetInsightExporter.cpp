@@ -35,6 +35,7 @@
 #include "NiagaraDataInterfaceCurveBase.h"
 #include "NiagaraGraph.h"
 #include "NiagaraNodeFunctionCall.h"
+#include "NiagaraNodeCustomHlsl.h"
 #include "NiagaraParameterStore.h"
 #include "NiagaraRendererProperties.h"
 #include "NiagaraScript.h"
@@ -171,6 +172,12 @@ namespace AssetInsightImpl
 			for (const FReadAllGraphNodeIR& Node : Graph.Nodes)
 			{
 				SearchText += TEXT("|") + Node.ClassName.ToLower() + TEXT("|") + Node.Title.ToLower() + TEXT("|") + Node.Comment.ToLower();
+				if (!Node.SourceCode.IsEmpty())
+				{
+					// Lets an artist find a module by a symbol they remember from the
+					// shader body rather than by the node title.
+					SearchText += TEXT("|") + Node.SourceCode.ToLower();
+				}
 			}
 		}
 		const FString ExtendedSearchText = SearchText + DependencyText;
@@ -759,6 +766,37 @@ namespace AssetInsightImpl
 				else
 				{
 					NodeIR.ReferencePath = FunctionCall->Signature.Name.ToString();
+				}
+
+				// UNiagaraNodeCustomHlsl derives from UNiagaraNodeFunctionCall, so this
+				// must be handled inside this branch: an else-if would never be reached.
+				// Until now such a node exported only its identity and pins, leaving the
+				// authored shader logic invisible even though it often carries the
+				// decisive behaviour of a module. The code is a Raw Fact, stored verbatim
+				// and never summarised here.
+				if (const UNiagaraNodeCustomHlsl* CustomHlsl = Cast<UNiagaraNodeCustomHlsl>(Node))
+				{
+					// GetCustomHlsl() is not exported from NiagaraEditor, so calling it
+					// fails at link time. The property itself is reflected, so read it
+					// through reflection instead of taking a hard symbol dependency.
+					if (const FProperty* CodeProperty = CustomHlsl->GetClass()->FindPropertyByName(TEXT("CustomHlsl")))
+					{
+						if (const FStrProperty* StringProperty = CastField<FStrProperty>(CodeProperty))
+						{
+							NodeIR.SourceCode = StringProperty->GetPropertyValue_InContainer(CustomHlsl);
+						}
+					}
+					NodeIR.SourceCodeLanguage = TEXT("hlsl");
+					if (const UEnum* UsageEnum = StaticEnum<ENiagaraScriptUsage>())
+					{
+						NodeIR.ReferencePath = UsageEnum->GetNameStringByValue(
+							static_cast<int64>(CustomHlsl->ScriptUsage));
+					}
+					if (NodeIR.Comment.IsEmpty())
+					{
+						NodeIR.Comment = FString::Printf(
+							TEXT("Custom HLSL, %d characters"), NodeIR.SourceCode.Len());
+					}
 				}
 			}
 			if (NodeIR.Title.IsEmpty()) NodeIR.Title = NodeIR.Name;

@@ -34,6 +34,16 @@ struct FReadAllGraphNodeIR
 	FString ReferencePath;
 	FString CalleeGraphId;
 	FString SelectedVersion;
+
+	/**
+	 * Verbatim code authored inside the node, currently Niagara Custom HLSL.
+	 * Kept unescaped in the IR; renderers escape it for their own format. Empty
+	 * for every node type that has no embedded code, so consumers can treat a
+	 * non-empty value as proof that the node carries authored shader logic.
+	 */
+	FString SourceCode;
+	FString SourceCodeLanguage;
+
 	bool bEnabled = true;
 	int32 PositionX = 0;
 	int32 PositionY = 0;
