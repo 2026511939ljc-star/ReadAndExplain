@@ -274,7 +274,7 @@ class ContractTests(unittest.TestCase):
         descriptors = {descriptor["name"]: descriptor for descriptor in rae.TOOLS}
         self.assertEqual(expected, set(descriptors))
         self.assertEqual(12, len(rae.TOOLS))
-        self.assertEqual("0.6.0", rae.SERVER_VERSION)
+        self.assertEqual("0.7.0", rae.SERVER_VERSION)
         self.assertEqual("rae.mcp/1.0", rae.CONTRACT_VERSION)
         self.assertEqual({1}, rae.SUPPORTED_PACK_SCHEMAS)
         for name, descriptor in descriptors.items():
