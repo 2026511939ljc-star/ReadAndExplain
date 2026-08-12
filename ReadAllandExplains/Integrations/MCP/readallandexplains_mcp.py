@@ -1269,13 +1269,20 @@ class ContextPackStore:
             resolution = "listed"
         else:
             resolution = "not_found" if not candidates else "unique" if len(candidates) == 1 else "ambiguous"
+        # Provenance must be measured, not assumed. This used to be a hardcoded
+        # "derived_metadata_graphs", which meant a natively indexed pack was
+        # reported as derived here while asset_outline reported it as native. The
+        # same verification is applied in both places so the two cannot disagree.
+        graph_source = "derived_metadata_graphs"
+        if self._native_graph_index(metadata, graphs) is not None:
+            graph_source = "native_metadata_graph_index"
         data = {
             "query": normalized_query,
             "target_kind": target_kind,
             "list_mode": list_mode,
             "resolution": resolution,
             "candidates": selected,
-            "graph_index_source": "derived_metadata_graphs",
+            "graph_index_source": graph_source,
         }
         if kind_needle:
             data["kind_filter"] = str(kind_filter).strip()

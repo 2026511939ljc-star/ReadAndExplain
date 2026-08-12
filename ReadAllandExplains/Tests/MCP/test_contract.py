@@ -419,6 +419,29 @@ class ContractTests(unittest.TestCase):
         self.assertEqual("derived_metadata_graphs", result["data"]["graph_index_source"])
         self.assertIn("GRAPH_INDEX_DERIVED", {warning["code"] for warning in result["warnings"]})
 
+    def test_locate_graph_target_reports_provenance_consistently_with_outline(self) -> None:
+        metadata_path = self.complete / "Niagara" / "NS_Test.meta.json"
+        self._inject_native_graph_index(metadata_path)
+        outline = rae.call_tool(self.store, "get_asset_outline", {"asset": "NS_Test"})
+        located = rae.call_tool(self.store, "locate_graph_target", {"asset": "NS_Test"})
+        self.assertEqual("native_metadata_graph_index", located["data"]["graph_index_source"])
+        self.assertEqual(outline["data"]["graph_index_source"], located["data"]["graph_index_source"])
+
+    def test_locate_graph_target_falls_back_when_native_index_is_stale(self) -> None:
+        metadata_path = self.complete / "Niagara" / "NS_Test.meta.json"
+        metadata = self._inject_native_graph_index(metadata_path)
+        metadata["graphIndex"]["graphs"][0]["nodeCount"] = 999
+        self._dump(metadata_path, metadata)
+        self.store = rae.ContextPackStore(self.root)
+        outline = rae.call_tool(self.store, "get_asset_outline", {"asset": "NS_Test"})
+        located = rae.call_tool(self.store, "locate_graph_target", {"asset": "NS_Test"})
+        self.assertEqual("derived_metadata_graphs", located["data"]["graph_index_source"])
+        self.assertEqual(outline["data"]["graph_index_source"], located["data"]["graph_index_source"])
+
+    def test_locate_graph_target_reports_derived_without_native_index(self) -> None:
+        located = rae.call_tool(self.store, "locate_graph_target", {"asset": "NS_Test"})
+        self.assertEqual("derived_metadata_graphs", located["data"]["graph_index_source"])
+
     def test_locate_graph_target_handles_graph_node_pin_and_resolution(self) -> None:
         graph = rae.call_tool(
             self.store,
