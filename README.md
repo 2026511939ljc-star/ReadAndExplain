@@ -9,7 +9,7 @@
 >
 > | 项目 / Item | 要求 / Requirement |
 > |---|---|
-> | **Unreal Engine** | **5.7 — 硬要求 / required** (`.uplugin` 声明 `EngineVersion 5.7.0`) |
+> | **Unreal Engine** | **5.7 —可以自行编译成其他版本没关系 / required** (`.uplugin` 声明 `EngineVersion 5.7.0`) |
 > | 操作系统 / OS | Windows 64 位 / 64-bit |
 > | 模块类型 / Module | `Editor` — 仅编辑器加载，不进运行时或打包游戏 / editor-only |
 > | Python | 3.9+ — 仅 CodeBuddy / MCP 需要，只用标准库 / MCP only, stdlib only |
