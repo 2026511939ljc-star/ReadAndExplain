@@ -77,5 +77,32 @@ git diff --stat
 3. 运行 Python 契约测试和 CodeBuddy 插件校验。
 4. 需要时完成 UE 编译、部署及真实资产导出验证。
 5. 提交 `iteration/vnext`，推送远端并记录提交哈希。
-6. 确认发布内容后再合并 `main`、创建版本标签和发布包。
+6. 确认发布内容后创建版本标签和发布包。
 7. 部署与备份保留在仓库外，并记录来源提交；不要将其混入 Git。
+
+## 历史谱系债务（已知，不可修复）
+
+4.8 线与 4.7 线**没有共同祖先**。`git merge-base origin/main iteration/vnext` 返回空。
+
+```text
+4.7 线   根提交 ff13602   插件文件位于仓库根
+4.8 线   根提交 86ca40a   插件文件位于 ReadAllandExplains/ 子目录
+```
+
+成因是 `86ca40a`（"Baseline: ReadAllandExplains 3.0 for UE 5.7"）以新建根提交的方式起头，而不是从 `origin/main` 开分支。缺少的就是一句 `git checkout -b iteration/vnext origin/main`。
+
+这不可事后修复：祖先链在提交创建时写死。合并也不是补救手段——两侧插件根目录层级不同，`--allow-unrelated-histories` 只会产出"根目录一份 4.7、子目录一份 4.8"的并存树，而非连续历史。因此上面第 6 步不再包含"合并 main"。
+
+它没有被及早发现，是因为在独立 worktree 内日常命令全部自洽，断裂不产生任何报错，只在数月后需要合回主线时才显现。
+
+现状：4.8 全部内容在 `iteration/vnext`，标签 `v4.8.0-preview.1` 至 `v4.8.0` 序列完整；4.7 线由 `release/v4.7.0` 分支与 `v4.7.0` 标签归档保留，随时可检出。`origin/main` 仍指向 v4.7.0，未被改写。
+
+契约测试 `test_branch_shares_history_with_the_published_mainline` 对这一既成事实记为 skip，但对**任何新的自立根提交**仍会失败并指名该根。
+
+### 新开分支的正确做法
+
+```powershell
+git checkout -b <分支名> iteration/vnext   # 从 4.8 主线开
+```
+
+即使需要大规模重铺基线，也应在既有历史上提交一次大改动，而不是新建根提交。目录可以重来，历史不该重来。

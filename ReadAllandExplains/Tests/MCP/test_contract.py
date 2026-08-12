@@ -1026,6 +1026,78 @@ class ContractTests(unittest.TestCase):
         self.assertNotIn("allowed-tools:", skill_header)
         self.assertNotIn("disable:", skill_header)
 
+    def test_branch_shares_history_with_the_published_mainline(self) -> None:
+        """Guards against a branch being rooted on its own fresh initial commit.
+
+        This exists because of a real incident. A UE 5.7 baseline was started by
+        rooting a new history instead of branching from the published mainline, so
+        the 4.8 line and the 4.7 line share no ancestor at all. Nothing complained:
+        every day-to-day command was self-consistent inside the new line, and the
+        break only surfaced months later when the work had to be merged back, at
+        which point it was already unfixable, because ancestry is written when a
+        commit is created and cannot be repaired afterwards.
+
+        Merging the two lines is not a remedy either. They nest the plugin at
+        different depths, so an unrelated-histories merge produces one copy at the
+        repository root and another under a subdirectory instead of a continuous
+        history.
+
+        The break is therefore recorded as accepted debt rather than asserted away,
+        while any *new* self-rooted branch still fails. Keeping a permanently red
+        test would train the suite to be ignored, and asserting the current state is
+        fine would be a lie; keying on the root commit distinguishes the historical
+        fact from the mistake worth preventing.
+        """
+        # The 4.8 line's root. Known, deliberate, and impossible to reattach.
+        ACCEPTED_ROOT = "86ca40a89cd85d68d77b2cb4929e3e55d604f6d1"
+
+        def git(*args: str) -> tuple[int, str]:
+            done = subprocess.run(
+                ["git", *args],
+                cwd=str(PLUGIN_ROOT),
+                capture_output=True,
+                text=True,
+            )
+            return done.returncode, done.stdout.strip()
+
+        code, _ = git("rev-parse", "--git-dir")
+        if code != 0:
+            self.skipTest("not a git checkout")
+
+        # Prefer the remote mainline; fall back to a local one. A checkout without
+        # either is a valid export, not a failure.
+        mainline = ""
+        for candidate in ("refs/remotes/origin/main", "refs/heads/main"):
+            code, resolved = git("rev-parse", "--verify", "--quiet", candidate)
+            if code == 0 and resolved:
+                mainline = candidate
+                break
+        if not mainline:
+            self.skipTest("no mainline reference present")
+
+        code, base = git("merge-base", mainline, "HEAD")
+        if code == 0 and base:
+            return
+
+        code, roots = git("rev-list", "--max-parents=0", "HEAD")
+        if code != 0:
+            self.skipTest("cannot resolve root commit")
+
+        current_roots = roots.split()
+        unexpected = [root for root in current_roots if root != ACCEPTED_ROOT]
+        self.assertFalse(
+            unexpected,
+            f"HEAD shares no ancestor with {mainline} and is rooted on "
+            f"{unexpected} rather than the one accepted historical root. A branch "
+            f"rooted on its own initial commit can never be merged back without "
+            f"discarding one side's history. Branch from the mainline instead.",
+        )
+        self.skipTest(
+            f"known history debt: this line is rooted on {ACCEPTED_ROOT[:7]} and "
+            f"shares no ancestor with {mainline}. Recorded in "
+            f"docs/REPOSITORY_MANAGEMENT.md; not repairable, only preventable."
+        )
+
     def test_error_uses_stable_code(self) -> None:
         request = {
             "jsonrpc": "2.0",
