@@ -1,0 +1,96 @@
+{
+  "endpoint": "B_trans_ue_install",
+  "script": "D:\\UE5\\Trans\\plugins\\ReadAllandExplains\\Integrations\\MCP\\readallandexplains_mcp.py",
+  "pack": "ContextPack_20260811_210312_55EAC3E3",
+  "q": {
+    "q1_identity": {
+      "state": "complete",
+      "fingerprint": "sha1:10533df69cb81b6ea0da67dad92ac0c40ee4c88b"
+    },
+    "q2_blueprint": {
+      "graph_index_source": "native_metadata_graph_index",
+      "warnings": [
+        "READABLE_INDEX_DERIVED"
+      ],
+      "graph_count": 7,
+      "total_nodes": 256,
+      "total_pins": 780,
+      "total_edges": 329,
+      "json_pointers": [
+        "/graphs/0",
+        "/graphs/1",
+        "/graphs/2",
+        "/graphs/3",
+        "/graphs/4",
+        "/graphs/5",
+        "/graphs/6"
+      ],
+      "first_graph_id": "/Game/TALibrary/CommonTools/Envirment/FluxAllOne/BP_FluxAllOne.BP_FluxAllOne:BakeFluxAllOne"
+    },
+    "q3_niagara": {
+      "graph_index_source": "native_metadata_graph_index",
+      "warnings": [
+        "READABLE_INDEX_DERIVED"
+      ],
+      "graph_count": 20,
+      "total_nodes": 767,
+      "total_pins": 2951,
+      "total_edges": 1087,
+      "json_pointers": [
+        "/graphs/0",
+        "/graphs/1",
+        "/graphs/2",
+        "/graphs/3",
+        "/graphs/4",
+        "/graphs/5",
+        "/graphs/6",
+        "/graphs/7",
+        "/graphs/8",
+        "/graphs/9",
+        "/graphs/10",
+        "/graphs/11",
+        "/graphs/12",
+        "/graphs/13",
+        "/graphs/14",
+        "/graphs/15",
+        "/graphs/16",
+        "/graphs/17",
+        "/graphs/18",
+        "/graphs/19"
+      ],
+      "first_graph_id": "/Game/TALibrary/CommonTools/Envirment/FluxAllOne/Surface/Meshes/Niagara/NS_InfiniteSurfaceMesh.NS_InfiniteSurfaceMesh:SystemSpawnScript.SystemScriptSource.SystemScriptGraph"
+    },
+    "q4_custom_hlsl": {
+      "resolution": "listed",
+      "graph_index_source": "native_metadata_graph_index",
+      "candidate_count": 1,
+      "node_ids": [
+        "54CF7B53-4C9C-1BB0-BB8F-F592DC86CC57"
+      ],
+      "json_pointers": [
+        "/graphs/16/nodes/20"
+      ]
+    },
+    "q5_sections": {
+      "section_count": 7,
+      "section_ids": [
+        "overview",
+        "parameters",
+        "relationships",
+        "graph-ir",
+        "niagara-details",
+        "technical",
+        "ai-prompt"
+      ],
+      "character_counts": [
+        581,
+        2426,
+        2166,
+        1397,
+        1169,
+        176732,
+        450
+      ]
+    }
+  }
+}
