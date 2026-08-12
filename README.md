@@ -1,5 +1,23 @@
 # ReadAllandExplains 开发仓库 / Development Repository
 
+[![Unreal Engine](https://img.shields.io/badge/Unreal%20Engine-5.7-black?logo=unrealengine&logoColor=white)](https://www.unrealengine.com/)
+[![Platform](https://img.shields.io/badge/platform-Windows%2064--bit-blue)](https://www.microsoft.com/windows)
+[![Version](https://img.shields.io/badge/release-4.8.0-brightgreen)](ReadAllandExplains/RELEASE_NOTES_4.8.0.md)
+[![Python](https://img.shields.io/badge/Python-3.9%2B-yellow?logo=python&logoColor=white)](https://www.python.org/)
+
+> ### ⚠️ 运行环境 / Requirements
+>
+> | 项目 / Item | 要求 / Requirement |
+> |---|---|
+> | **Unreal Engine** | **5.7 — 硬要求 / required** (`.uplugin` 声明 `EngineVersion 5.7.0`) |
+> | 操作系统 / OS | Windows 64 位 / 64-bit |
+> | 模块类型 / Module | `Editor` — 仅编辑器加载，不进运行时或打包游戏 / editor-only |
+> | Python | 3.9+ — 仅 CodeBuddy / MCP 需要，只用标准库 / MCP only, stdlib only |
+>
+> 插件含 C++ 编辑器模块并针对 5.7 编译。**其他 5.x 版本需自行以对应引擎重新编译**，并重跑契约与 Golden 回归确认导出字段未漂移。纯 UE 侧功能（右键导出 Context Pack）不需要 Python。
+>
+> The plugin ships a C++ editor module built against 5.7. **Other 5.x versions require rebuilding against that engine** and re-running the contract and Golden suites to confirm the exported fields have not drifted. The UE-side feature alone needs no Python.
+
 [中文](#中文) | [English](#english)
 
 ---

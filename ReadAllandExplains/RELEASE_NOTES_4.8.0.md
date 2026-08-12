@@ -2,6 +2,23 @@
 
 UE 资产证据编译器。把蓝图、材质和 Niagara 资产编译成可被 AI 渐进式查询的静态证据快照，每条结论都能回指到快照中的确切位置。
 
+## 运行环境
+
+```text
+Unreal Engine   5.7（.uplugin 声明 EngineVersion 5.7.0）
+操作系统        Windows 64 位
+插件模块类型    Editor（仅编辑器加载，不参与运行时或打包游戏）
+Python          3.9+（仅 CodeBuddy / MCP 需要，且只用标准库）
+```
+
+**引擎版本是硬要求。** 插件含 C++ 编辑器模块并针对 5.7 编译，`EngineVersion` 声明为 `5.7.0`。在其他 5.x 版本上 UE 会提示版本不匹配；即使强行加载，Niagara 与 Blueprint 的内部数据结构在小版本间会变化，导出结果不保证正确。要用于其他版本需自行以对应引擎重新编译，并重跑契约与 Golden 回归确认导出字段未漂移。
+
+未声明平台白名单，但发布包与全部验证均在 Windows 64 位完成，其他平台未经测试。
+
+Python 只被 MCP 侧使用；纯 UE 插件功能（右键导出 Context Pack）不需要 Python。
+
+安装步骤见 [INSTALLATION.md](docs/INSTALLATION.md)。
+
 ## 本版本的主线变化
 
 ### 原生索引由导出器写入
