@@ -302,6 +302,13 @@ public:
                 this,
                 &FLocalizedMaterialWorkbenchModule::RunSelfTest),
             ECVF_Default);
+        OpenCommand = IConsoleManager::Get().RegisterConsoleCommand(
+            TEXT("LocalizedMaterialWorkbench.Open"),
+            TEXT("Open the Localized Material Workbench window."),
+            FConsoleCommandDelegate::CreateRaw(
+                this,
+                &FLocalizedMaterialWorkbenchModule::OpenWorkbench),
+            ECVF_Default);
     }
 
     virtual void ShutdownModule() override
@@ -316,6 +323,12 @@ public:
         UVStrategyText.Reset();
         CompatibilityText.Reset();
         StatusText.Reset();
+
+        if (OpenCommand)
+        {
+            IConsoleManager::Get().UnregisterConsoleObject(OpenCommand, false);
+            OpenCommand = nullptr;
+        }
 
         if (SelfTestCommand)
         {
@@ -342,6 +355,7 @@ private:
     TSharedPtr<STextBlock> CompatibilityText;
     TSharedPtr<STextBlock> StatusText;
     LocalizedMaterialWorkbench::FSelectionSnapshot Selection;
+    IConsoleObject* OpenCommand = nullptr;
     IConsoleObject* SelfTestCommand = nullptr;
 
     void RegisterMenus()
