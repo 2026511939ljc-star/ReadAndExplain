@@ -29,6 +29,7 @@
 #include "Widgets/Layout/SUniformGridPanel.h"
 #include "Widgets/Layout/SWidgetSwitcher.h"
 #include "Widgets/SBoxPanel.h"
+#include "Widgets/SNullWidget.h"
 #include "Widgets/SWindow.h"
 #include "Widgets/Text/STextBlock.h"
 
@@ -225,6 +226,57 @@ static bool HasToolMenuEntry(const FName SectionName, const FName EntryName)
     return Section && Section->FindEntry(EntryName) != nullptr;
 }
 
+static bool WidgetTreeContainsText(
+    const TSharedRef<SWidget>& Widget,
+    const FString& TargetText)
+{
+    if (Widget->GetTypeAsString() == TEXT("STextBlock"))
+    {
+        const TSharedRef<STextBlock> TextBlock =
+            StaticCastSharedRef<STextBlock>(Widget);
+        if (TextBlock->GetText().ToString().Contains(
+            TargetText,
+            ESearchCase::IgnoreCase))
+        {
+            return true;
+        }
+    }
+
+    FChildren* Children = Widget->GetChildren();
+    for (int32 Index = 0; Children && Index < Children->Num(); ++Index)
+    {
+        if (WidgetTreeContainsText(Children->GetChildAt(Index), TargetText))
+        {
+            return true;
+        }
+    }
+    return false;
+}
+
+static bool SimulateMenuButtonClick(
+    const TSharedRef<SWidget>& Widget,
+    const FString& TargetText)
+{
+    const FString WidgetType = Widget->GetTypeAsString();
+    if ((WidgetType == TEXT("SButton") ||
+         WidgetType == TEXT("SMenuEntryButton")) &&
+        WidgetTreeContainsText(Widget, TargetText))
+    {
+        StaticCastSharedRef<SButton>(Widget)->SimulateClick();
+        return true;
+    }
+
+    FChildren* Children = Widget->GetChildren();
+    for (int32 Index = 0; Children && Index < Children->Num(); ++Index)
+    {
+        if (SimulateMenuButtonClick(Children->GetChildAt(Index), TargetText))
+        {
+            return true;
+        }
+    }
+    return false;
+}
+
 static bool InvokeExistingTool(
     const FName ModuleName,
     const FName SectionName,
@@ -273,7 +325,39 @@ static bool InvokeExistingTool(
         return false;
     }
 
-    if (!Entry->TryExecuteToolUIAction(Menu->Context))
+    FString TargetLabel;
+    if (EntryName == TEXT("LocalizedMapBaker_OpenPanel"))
+    {
+        TargetLabel = TEXT("Localized Map Baker");
+    }
+    else if (EntryName == TEXT("LocalizedGlowPainter_OpenPanel"))
+    {
+        TargetLabel = TEXT("Localized Glow Painter");
+    }
+    else
+    {
+        OutError = FString::Printf(
+            TEXT("Tool entry %s does not have a recognized menu label."),
+            *EntryName.ToString());
+        return false;
+    }
+
+    const TSharedRef<SWidget> GeneratedMenu =
+        ToolMenus->GenerateWidget(
+            TEXT("LevelEditor.MainMenu.Tools"), Menu->Context);
+    const bool bLabelPresent =
+        WidgetTreeContainsText(GeneratedMenu, TargetLabel);
+    const bool bClicked =
+        SimulateMenuButtonClick(GeneratedMenu, TargetLabel);
+    UE_LOG(
+        LogTemp,
+        Display,
+        TEXT("[LocalizedMaterialWorkbench] Menu probe target=%s root=%s label=%d clicked=%d"),
+        *TargetLabel,
+        *GeneratedMenu->GetTypeAsString(),
+        bLabelPresent ? 1 : 0,
+        bClicked ? 1 : 0);
+    if (!bClicked)
     {
         OutError = FString::Printf(
             TEXT("工具入口 %s 存在，但执行动作失败。"),
@@ -281,6 +365,25 @@ static bool InvokeExistingTool(
         return false;
     }
     return true;
+}
+
+static TSharedPtr<SWindow> FindTopLevelWindowByTitle(const FString& WindowTitle)
+{
+    if (!FSlateApplication::IsInitialized())
+    {
+        return nullptr;
+    }
+
+    for (const TSharedRef<SWindow>& Window :
+        FSlateApplication::Get().GetTopLevelWindows())
+    {
+        if (Window->GetTitle().ToString().Equals(
+            WindowTitle, ESearchCase::CaseSensitive))
+        {
+            return Window;
+        }
+    }
+    return nullptr;
 }
 
 } // namespace LocalizedMaterialWorkbench
@@ -313,6 +416,7 @@ public:
 
     virtual void ShutdownModule() override
     {
+        CloseEmbeddedToolWindows();
         if (TSharedPtr<SWindow> Window = WorkbenchWindow.Pin())
         {
             Window->RequestDestroyWindow();
@@ -323,6 +427,10 @@ public:
         UVStrategyText.Reset();
         CompatibilityText.Reset();
         StatusText.Reset();
+        MapBakerHostBox.Reset();
+        GlowPainterHostBox.Reset();
+        MapBakerSourceWindow.Reset();
+        GlowPainterSourceWindow.Reset();
 
         if (OpenCommand)
         {
@@ -347,6 +455,8 @@ private:
     inline static const FName GlowPainterModuleName = TEXT("LocalizedGlowPainter");
     inline static const FName MapBakerEntryName = TEXT("LocalizedMapBaker_OpenPanel");
     inline static const FName GlowPainterEntryName = TEXT("LocalizedGlowPainter_OpenPanel");
+    inline static const FString MapBakerWindowTitle = TEXT("Localized Map Baker");
+    inline static const FString GlowPainterWindowTitle = TEXT("Localized Glow Painter");
 
     TWeakPtr<SWindow> WorkbenchWindow;
     TSharedPtr<SWidgetSwitcher> WorkflowSwitcher;
@@ -355,6 +465,10 @@ private:
     TSharedPtr<STextBlock> CompatibilityText;
     TSharedPtr<STextBlock> StatusText;
     LocalizedMaterialWorkbench::FSelectionSnapshot Selection;
+    TSharedPtr<SBox> MapBakerHostBox;
+    TSharedPtr<SBox> GlowPainterHostBox;
+    TSharedPtr<SWindow> MapBakerSourceWindow;
+    TSharedPtr<SWindow> GlowPainterSourceWindow;
     IConsoleObject* OpenCommand = nullptr;
     IConsoleObject* SelfTestCommand = nullptr;
 
@@ -501,6 +615,152 @@ private:
         return FReply::Handled();
     }
 
+    TSharedRef<SWidget> MakeEmbeddedMessage(const FText& Message) const
+    {
+        return SNew(SBorder)
+            .Padding(18.0f)
+            [
+                SNew(STextBlock)
+                .Text(Message)
+                .AutoWrapText(true)
+            ];
+    }
+
+    bool MountExistingToolPanel(
+        const FName ModuleName,
+        const FName SectionName,
+        const FName EntryName,
+        const FString& WindowTitle,
+        const TSharedPtr<SBox>& TargetBox,
+        TSharedPtr<SWindow>& SourceWindow,
+        FString& OutError)
+    {
+        OutError.Reset();
+        if (!TargetBox.IsValid())
+        {
+            OutError = TEXT("Workbench embedded host container is not ready.");
+            return false;
+        }
+        if (SourceWindow.IsValid())
+        {
+            return true;
+        }
+
+        if (!LocalizedMaterialWorkbench::InvokeExistingTool(
+            ModuleName, SectionName, EntryName, OutError))
+        {
+            return false;
+        }
+
+        TSharedPtr<SWindow> ToolWindow =
+            LocalizedMaterialWorkbench::FindTopLevelWindowByTitle(WindowTitle);
+        if (!ToolWindow.IsValid())
+        {
+            OutError = FString::Printf(
+                TEXT("Tool action executed, but window \"%s\" was not found."),
+                *WindowTitle);
+            return false;
+        }
+
+        const TSharedRef<SWidget> ToolContent = ToolWindow->GetContent();
+        ToolWindow->SetContent(SNullWidget::NullWidget);
+        ToolWindow->HideWindow();
+        TargetBox->SetContent(ToolContent);
+        SourceWindow = ToolWindow;
+
+        UE_LOG(
+            LogTemp,
+            Display,
+            TEXT("[LocalizedMaterialWorkbench] Embedded %s into the workbench."),
+            *WindowTitle);
+        return true;
+    }
+
+    void CloseEmbeddedToolWindows()
+    {
+        const auto CloseWindow = [](TSharedPtr<SWindow>& Window)
+        {
+            if (Window.IsValid() && FSlateApplication::IsInitialized())
+            {
+                Window->RequestDestroyWindow();
+            }
+            Window.Reset();
+        };
+
+        CloseWindow(GlowPainterSourceWindow);
+        CloseWindow(MapBakerSourceWindow);
+    }
+
+    void MountEmbeddedTools()
+    {
+        if (Selection.IsValid())
+        {
+            SyncMeshAssetToContentBrowser();
+        }
+
+        FString BakerError;
+        const bool bBakerMounted = MountExistingToolPanel(
+            MapBakerModuleName,
+            MapBakerModuleName,
+            MapBakerEntryName,
+            MapBakerWindowTitle,
+            MapBakerHostBox,
+            MapBakerSourceWindow,
+            BakerError);
+        if (!bBakerMounted && MapBakerHostBox.IsValid())
+        {
+            UE_LOG(
+                LogTemp,
+                Warning,
+                TEXT("[LocalizedMaterialWorkbench] Map Baker embed failed: %s"),
+                *BakerError);
+            MapBakerHostBox->SetContent(MakeEmbeddedMessage(
+                FText::FromString(FString::Printf(
+                    TEXT("Map Baker embed failed: %s"),
+                    *BakerError))));
+        }
+
+        FString PainterError;
+        const bool bPainterMounted = MountExistingToolPanel(
+            GlowPainterModuleName,
+            GlowPainterModuleName,
+            GlowPainterEntryName,
+            GlowPainterWindowTitle,
+            GlowPainterHostBox,
+            GlowPainterSourceWindow,
+            PainterError);
+        if (!bPainterMounted && GlowPainterHostBox.IsValid())
+        {
+            UE_LOG(
+                LogTemp,
+                Warning,
+                TEXT("[LocalizedMaterialWorkbench] Glow Painter embed failed: %s"),
+                *PainterError);
+            GlowPainterHostBox->SetContent(MakeEmbeddedMessage(
+                FText::FromString(FString::Printf(
+                    TEXT("Glow Painter embed failed: %s"),
+                    *PainterError))));
+        }
+
+        if (CompatibilityText.IsValid())
+        {
+            CompatibilityText->SetText(FText::FromString(
+                GetCompatibilitySummary()));
+        }
+
+        if (bBakerMounted && bPainterMounted)
+        {
+            SetStatus(TEXT("Map Baker and Glow Painter are embedded in this Workbench."));
+        }
+        else
+        {
+            SetStatus(FString::Printf(
+                TEXT("Embed result: Map Baker %s; Glow Painter %s."),
+                bBakerMounted ? TEXT("OK") : *BakerError,
+                bPainterMounted ? TEXT("OK") : *PainterError));
+        }
+    }
+
     TSharedRef<SWidget> MakeSection(
         const FText& Title,
         const TSharedRef<SWidget>& Content) const
@@ -609,7 +869,7 @@ private:
             ];
     }
 
-    TSharedRef<SWidget> BuildBakePage()
+    TSharedRef<SWidget> BuildLegacyBakePage()
     {
         return SNew(SVerticalBox)
             + SVerticalBox::Slot()
@@ -654,7 +914,7 @@ private:
             ];
     }
 
-    TSharedRef<SWidget> BuildPaintPage()
+    TSharedRef<SWidget> BuildLegacyPaintPage()
     {
         return SNew(SVerticalBox)
             + SVerticalBox::Slot()
@@ -700,6 +960,28 @@ private:
             ];
     }
 
+    TSharedRef<SWidget> BuildBakePage()
+    {
+        return SAssignNew(MapBakerHostBox, SBox)
+            .MinDesiredHeight(700.0f)
+            [
+                MakeEmbeddedMessage(LOCTEXT(
+                    "MapBakerLoading",
+                    "Loading the complete Localized Map Baker controls into this page..."))
+            ];
+    }
+
+    TSharedRef<SWidget> BuildPaintPage()
+    {
+        return SAssignNew(GlowPainterHostBox, SBox)
+            .MinDesiredHeight(760.0f)
+            [
+                MakeEmbeddedMessage(LOCTEXT(
+                    "GlowPainterLoading",
+                    "Loading the complete Localized Glow Painter controls into this page..."))
+            ];
+    }
+
     TSharedRef<SWidget> BuildExportPage()
     {
         return SNew(SVerticalBox)
@@ -742,7 +1024,7 @@ private:
                 .Padding(16.0f, 14.0f, 16.0f, 8.0f)
                 [
                     SNew(STextBlock)
-                    .Text(LOCTEXT("WorkbenchTitle", "Localized Material Workbench 0.1.0-test"))
+                    .Text(LOCTEXT("WorkbenchTitle", "Localized Material Workbench 0.1.1-test"))
                     .Font(FCoreStyle::GetDefaultFontStyle(TEXT("Bold"), 16))
                 ]
                 + SVerticalBox::Slot()
@@ -752,7 +1034,7 @@ private:
                     SNew(STextBlock)
                     .Text(LOCTEXT(
                         "WorkbenchSubtitle",
-                        "统一分析与流程入口 · 原 LocalizedMapBaker / LocalizedGlowPainter 保持独立且不被修改"))
+                        "统一面板直接承载 Map Baker 与 Glow Painter 完整控件 · 两个原插件保持独立且不被修改"))
                     .AutoWrapText(true)
                 ]
                 + SVerticalBox::Slot()
@@ -845,12 +1127,13 @@ private:
         {
             ExistingWindow->BringToFront(true);
             RefreshSelection();
+            MountEmbeddedTools();
             return;
         }
 
         TSharedRef<SWindow> Window = SNew(SWindow)
             .Title(LOCTEXT("WorkbenchWindowTitle", "Localized Material Workbench"))
-            .ClientSize(FVector2D(920.0f, 720.0f))
+            .ClientSize(FVector2D(1180.0f, 900.0f))
             .SizingRule(ESizingRule::UserSized)
             .SupportsMaximize(true)
             .SupportsMinimize(true);
@@ -859,16 +1142,20 @@ private:
         Window->SetOnWindowClosed(FOnWindowClosed::CreateLambda(
             [this](const TSharedRef<SWindow>&)
             {
+                CloseEmbeddedToolWindows();
                 WorkbenchWindow.Reset();
                 WorkflowSwitcher.Reset();
                 SelectedAssetText.Reset();
                 UVStrategyText.Reset();
                 CompatibilityText.Reset();
                 StatusText.Reset();
+                MapBakerHostBox.Reset();
+                GlowPainterHostBox.Reset();
             }));
         WorkbenchWindow = Window;
         FSlateApplication::Get().AddWindow(Window);
         RefreshSelection();
+        MountEmbeddedTools();
         SetStep(LocalizedMaterialWorkbench::EWorkflowStep::Inspect);
     }
 
@@ -881,17 +1168,26 @@ private:
         const bool bPainterModule =
             LocalizedMaterialWorkbench::HasModule(GlowPainterModuleName);
         const bool bToolMenusReady = UToolMenus::TryGet() != nullptr;
+        const bool bWorkbenchOpen = WorkbenchWindow.IsValid();
+        const bool bBakerEmbedded =
+            MapBakerHostBox.IsValid() && MapBakerSourceWindow.IsValid();
+        const bool bPainterEmbedded =
+            GlowPainterHostBox.IsValid() && GlowPainterSourceWindow.IsValid();
         const bool bPassed =
-            bBakerModule && bPainterModule && bToolMenusReady;
+            bBakerModule && bPainterModule && bToolMenusReady &&
+            (!bWorkbenchOpen || (bBakerEmbedded && bPainterEmbedded));
 
         UE_LOG(
             LogTemp,
             Display,
-            TEXT("[LocalizedMaterialWorkbench][SelfTest] %s BakerModule=%d PainterModule=%d ToolMenus=%d Selection=%s"),
+            TEXT("[LocalizedMaterialWorkbench][SelfTest] %s BakerModule=%d PainterModule=%d ToolMenus=%d WorkbenchOpen=%d BakerEmbedded=%d PainterEmbedded=%d Selection=%s"),
             bPassed ? TEXT("PASS") : TEXT("FAIL"),
             bBakerModule ? 1 : 0,
             bPainterModule ? 1 : 0,
             bToolMenusReady ? 1 : 0,
+            bWorkbenchOpen ? 1 : 0,
+            bBakerEmbedded ? 1 : 0,
+            bPainterEmbedded ? 1 : 0,
             *LocalizedMaterialWorkbench::MakeSelectionSummary(Snapshot));
     }
 };

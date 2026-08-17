@@ -1,9 +1,9 @@
 {
   "FileVersion": 3,
-  "Version": 1,
-  "VersionName": "0.1.0-test",
+  "Version": 2,
+  "VersionName": "0.1.1-test",
   "FriendlyName": "Localized Material Workbench",
-  "Description": "Non-destructive workflow shell that coordinates Localized Map Baker and Localized Glow Painter without modifying either plugin.",
+  "Description": "Embedded non-destructive workflow for Localized Map Baker and Localized Glow Painter without modifying either source plugin.",
   "Category": "Editor Tools",
   "CreatedBy": "albertinsli",
   "CanContainContent": false,
