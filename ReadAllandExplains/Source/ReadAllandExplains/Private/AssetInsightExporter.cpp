@@ -605,6 +605,17 @@ namespace AssetInsightImpl
 
 	static FString BlueprintPinId(const FString& NodeId, const UEdGraphPin* Pin, const int32 PinIndex)
 	{
+#if WITH_EDITORONLY_DATA
+		if (Pin && Pin->PersistentGuid.IsValid())
+		{
+			return Pin->PersistentGuid.ToString(EGuidFormats::DigitsWithHyphens);
+		}
+#endif
+		return FString::Printf(TEXT("%s:pin:%d"), *NodeId, PinIndex);
+	}
+
+	static FString NiagaraPinId(const FString& NodeId, const UEdGraphPin* Pin, const int32 PinIndex)
+	{
 		return Pin && Pin->PinId.IsValid()
 			? Pin->PinId.ToString(EGuidFormats::DigitsWithHyphens)
 			: FString::Printf(TEXT("%s:pin:%d"), *NodeId, PinIndex);
@@ -809,7 +820,7 @@ namespace AssetInsightImpl
 				const UEdGraphPin* Pin = Node->Pins[PinIndex];
 				if (!Pin) continue;
 				FReadAllGraphPinIR PinIR;
-				PinIR.Id = BlueprintPinId(NodeId, Pin, PinIndex);
+				PinIR.Id = NiagaraPinId(NodeId, Pin, PinIndex);
 				PinIR.Name = Pin->PinName.ToString();
 				PinIR.Direction = Pin->Direction == EGPD_Output ? TEXT("Output") : TEXT("Input");
 				PinIR.Type = NiagaraPinType(Pin);
@@ -841,9 +852,9 @@ namespace AssetInsightImpl
 						|| TargetType.Contains(TEXT("ParameterMap"), ESearchCase::IgnoreCase);
 					Graph.Links.Add({
 						SourceNodeId,
-						BlueprintPinId(SourceNodeId, Pin, PinIndex),
+						NiagaraPinId(SourceNodeId, Pin, PinIndex),
 						*TargetNodeId,
-						BlueprintPinId(*TargetNodeId, LinkedPin, TargetPinIndex),
+						NiagaraPinId(*TargetNodeId, LinkedPin, TargetPinIndex),
 						bParameterMap ? TEXT("parameter-map") : TEXT("data")});
 
 				}
