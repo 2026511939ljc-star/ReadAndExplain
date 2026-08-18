@@ -2,7 +2,7 @@
 
 [![Unreal Engine](https://img.shields.io/badge/Unreal%20Engine-5.7-black?logo=unrealengine&logoColor=white)](https://www.unrealengine.com/)
 [![Platform](https://img.shields.io/badge/platform-Windows%2064--bit-blue)](https://www.microsoft.com/windows)
-[![Version](https://img.shields.io/badge/release-4.8.0-brightgreen)](ReadAllandExplains/RELEASE_NOTES_4.8.0.md)
+[![Version](https://img.shields.io/badge/release-4.8.1-brightgreen)](ReadAllandExplains/RELEASE_NOTES_4.8.1.md)
 [![Python](https://img.shields.io/badge/Python-3.9%2B-yellow?logo=python&logoColor=white)](https://www.python.org/)
 
 > ### ⚠️ 运行环境 / Requirements
@@ -24,7 +24,7 @@
 
 ## 中文
 
-本仓库是 ReadAllandExplains 的唯一开发源码仓库。当前开发线为 `iteration/vnext`，已发布正式版本为 `4.8.0`。外层目录名 `ReadAllandExplains_4.1.0_dev` 是历史工作目录名，不代表当前产品版本；版本只以插件清单为准。
+本仓库是 ReadAllandExplains 的唯一开发源码仓库。当前开发线为 `iteration/vnext`，已发布正式版本为 `4.8.1`。外层目录名 `ReadAllandExplains_4.1.0_dev` 是历史工作目录名，不代表当前产品版本；版本只以插件清单为准。
 
 ### 权威来源
 
@@ -33,7 +33,7 @@
 - CodeBuddy Skill 源：[SKILL.md](ReadAllandExplains/skills/readallandexplains/SKILL.md)
 - MCP 源：[readallandexplains_mcp.py](ReadAllandExplains/Integrations/MCP/readallandexplains_mcp.py)
 - 当前能力说明：[README.md](ReadAllandExplains/README.md)
-- 当前版本说明：[RELEASE_NOTES_4.8.0.md](ReadAllandExplains/RELEASE_NOTES_4.8.0.md)
+- 当前版本说明：[RELEASE_NOTES_4.8.1.md](ReadAllandExplains/RELEASE_NOTES_4.8.1.md)
 - 安装与升级：[INSTALLATION.md](ReadAllandExplains/docs/INSTALLATION.md)
 - 资产与发布管理规则：[REPOSITORY_MANAGEMENT.md](ReadAllandExplains/docs/REPOSITORY_MANAGEMENT.md)
 
@@ -65,7 +65,7 @@ codebuddy plugin validate ReadAllandExplains
 
 ## English
 
-This is the only source repository for ReadAllandExplains. Development happens on `iteration/vnext`, and the current released version is `4.8.0`. The outer directory name `ReadAllandExplains_4.1.0_dev` is a historical working directory name and does not indicate the product version; the plugin descriptor is the only source of truth for that.
+This is the only source repository for ReadAllandExplains. Development happens on `iteration/vnext`, and the current released version is `4.8.1`. The outer directory name `ReadAllandExplains_4.1.0_dev` is a historical working directory name and does not indicate the product version; the plugin descriptor is the only source of truth for that.
 
 ### Authoritative sources
 
@@ -74,7 +74,7 @@ This is the only source repository for ReadAllandExplains. Development happens o
 - CodeBuddy Skill source: [SKILL.md](ReadAllandExplains/skills/readallandexplains/SKILL.md)
 - MCP source: [readallandexplains_mcp.py](ReadAllandExplains/Integrations/MCP/readallandexplains_mcp.py)
 - Current capabilities: [README.md](ReadAllandExplains/README.md)
-- Current release notes: [RELEASE_NOTES_4.8.0.md](ReadAllandExplains/RELEASE_NOTES_4.8.0.md)
+- Current release notes: [RELEASE_NOTES_4.8.1.md](ReadAllandExplains/RELEASE_NOTES_4.8.1.md)
 - Install and upgrade: [INSTALLATION.md](ReadAllandExplains/docs/INSTALLATION.md)
 - Asset and release rules: [REPOSITORY_MANAGEMENT.md](ReadAllandExplains/docs/REPOSITORY_MANAGEMENT.md)
 
