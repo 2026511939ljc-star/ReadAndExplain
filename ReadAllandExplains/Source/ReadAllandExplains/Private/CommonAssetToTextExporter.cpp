@@ -101,7 +101,8 @@ namespace CommonAssetTextImpl
 		Out += TEXT("- Class: `") + Texture->GetClass()->GetName() + TEXT("`\n");
 		if (const UTexture2D* Texture2D = Cast<UTexture2D>(Texture))
 		{
-			Out += FString::Printf(TEXT("- Resolution: %d x %d\n"), Texture2D->GetSizeX(), Texture2D->GetSizeY());
+			const FIntPoint ImportedSize = Texture2D->GetImportedSize();
+			Out += FString::Printf(TEXT("- Resolution: %d x %d\n"), ImportedSize.X, ImportedSize.Y);
 			Out += FString::Printf(TEXT("- MipCount: %d\n"), Texture2D->GetNumMips());
 		}
 		Out += TEXT("- CompressionSettings: `") + EnumText(static_cast<TextureCompressionSettings>(Texture->CompressionSettings.GetValue())) + TEXT("`\n");
