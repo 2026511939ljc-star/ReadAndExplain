@@ -1,4 +1,4 @@
-# Localized Material Workbench 0.1.1-test
+# Localized Material Workbench 0.1.2-test
 
 This editor-only integration plugin embeds the real Slate controls from
 `LocalizedMapBaker` and `LocalizedGlowPainter` inside one workflow window.
@@ -14,6 +14,9 @@ It does not copy, modify, or replace either source plugin.
 - Glow Painter receives the existing Level Editor actor selection unchanged.
 - Missing source plugins produce a status message instead of a hard load error.
 - The source plugins remain independently accessible after the workbench closes.
+- During editor shutdown the workbench releases its embedded-window references
+  and lets Slate destroy top-level windows once, preventing double-destroy
+  crashes.
 
 ## Test flow
 

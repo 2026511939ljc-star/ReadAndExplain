@@ -417,9 +417,12 @@ public:
     virtual void ShutdownModule() override
     {
         CloseEmbeddedToolWindows();
-        if (TSharedPtr<SWindow> Window = WorkbenchWindow.Pin())
+        if (!IsEngineExitRequested())
         {
-            Window->RequestDestroyWindow();
+            if (TSharedPtr<SWindow> Window = WorkbenchWindow.Pin())
+            {
+                Window->RequestDestroyWindow();
+            }
         }
         WorkbenchWindow.Reset();
         WorkflowSwitcher.Reset();
@@ -678,9 +681,21 @@ private:
 
     void CloseEmbeddedToolWindows()
     {
+        // During editor shutdown Slate owns the top-level-window destruction
+        // order. Requesting destruction again from the workbench's close
+        // callback can address windows that Slate has already removed and
+        // corrupt its top-level window array. Only release our references in
+        // that path; the source plugins and Slate finish their own shutdown.
+        if (IsEngineExitRequested() || !FSlateApplication::IsInitialized())
+        {
+            GlowPainterSourceWindow.Reset();
+            MapBakerSourceWindow.Reset();
+            return;
+        }
+
         const auto CloseWindow = [](TSharedPtr<SWindow>& Window)
         {
-            if (Window.IsValid() && FSlateApplication::IsInitialized())
+            if (Window.IsValid() && Window->GetNativeWindow().IsValid())
             {
                 Window->RequestDestroyWindow();
             }
